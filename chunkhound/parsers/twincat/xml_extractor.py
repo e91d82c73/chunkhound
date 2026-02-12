@@ -1,9 +1,9 @@
 """Extract ST code from TcPOU XML files."""
 
-from dataclasses import dataclass
-from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from pathlib import Path
 
 from .exceptions import XMLExtractionError
 
@@ -97,10 +97,12 @@ class TcPOUExtractor:
         Args:
             xml_text: The full XML text
             search_start: Position to start searching from
-            element_path: List of element names to find (e.g., ["Declaration"] or ["Implementation", "ST"])
+            element_path: List of element names to find
+                (e.g., ["Declaration"] or ["Implementation", "ST"])
 
         Returns:
-            SourceLocation with line, column, and pos of content start, or None if not found
+            SourceLocation with line, column, and pos of content start,
+            or None if not found
         """
         pos = search_start
 
@@ -133,7 +135,7 @@ class TcPOUExtractor:
         if last_newline == -1:
             column = content_start + 1  # No newline, column is pos + 1 (1-indexed)
         else:
-            column = content_start - last_newline  # Distance from last newline (1-indexed)
+            column = content_start - last_newline  # Distance from last newline
 
         return SourceLocation(line=line, column=column, pos=content_start)
 
@@ -249,7 +251,9 @@ class TcPOUExtractor:
 
         # Actions may have their own Declaration
         decl_elem = action_elem.find("Declaration")
-        declaration = decl_elem.text if decl_elem is not None and decl_elem.text else None
+        declaration = (
+            decl_elem.text if decl_elem is not None and decl_elem.text else None
+        )
 
         # Find action declaration location
         declaration_location = None
@@ -286,14 +290,41 @@ class TcPOUExtractor:
         )
 
     def _detect_pou_type(self, declaration: str) -> str:
-        """Detect POU type from declaration header."""
-        decl_upper = declaration.upper().lstrip()
-        if decl_upper.startswith("PROGRAM"):
+        """Detect POU type from declaration header.
+
+        Skips comments (// and (* ... *)) to find the actual POU keyword.
+        """
+        # Remove line comments and block comments to find the POU keyword
+        cleaned = declaration
+        # Remove block comments (* ... *)
+        while "(*" in cleaned:
+            start = cleaned.find("(*")
+            end = cleaned.find("*)", start)
+            if end == -1:
+                # Unclosed block comment, just remove to end
+                cleaned = cleaned[:start]
+            else:
+                cleaned = cleaned[:start] + cleaned[end + 2 :]
+        # Remove line comments
+        lines = cleaned.split("\n")
+        non_comment_lines = []
+        for line in lines:
+            # Remove // comments
+            comment_pos = line.find("//")
+            if comment_pos != -1:
+                line = line[:comment_pos]
+            if line.strip():
+                non_comment_lines.append(line.strip())
+
+        # Find the first non-empty line after removing comments
+        cleaned_text = " ".join(non_comment_lines).upper().lstrip()
+
+        if cleaned_text.startswith("PROGRAM"):
             return "PROGRAM"
-        elif decl_upper.startswith("FUNCTION_BLOCK"):
+        elif cleaned_text.startswith("FUNCTION_BLOCK"):
             return "FUNCTION_BLOCK"
-        elif decl_upper.startswith("FUNCTION"):
+        elif cleaned_text.startswith("FUNCTION"):
             return "FUNCTION"
         else:
-            # Default to PROGRAM if not specified
+            # Default to UNKNOWN if not detected
             return "UNKNOWN"
