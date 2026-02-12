@@ -1,0 +1,1173 @@
+"""Main parser orchestrator for TwinCAT Structured Text."""
+
+from pathlib import Path
+
+from lark import Lark, Transformer, v_args, Token, Tree
+
+from .ast_nodes import (
+    POUDeclaration,
+    VariableBlock,
+    Variable,
+    ArrayType,
+    ActionAST,
+    Assignment,
+    IfStatement,
+    CaseStatement,
+    ForStatement,
+    WhileStatement,
+    RepeatStatement,
+    ExitStatement,
+    ContinueStatement,
+    ReturnStatement,
+    ExpressionStatement,
+    FunctionCall,
+    FBInvocation,
+    BinaryOp,
+    UnaryOp,
+    MemberAccess,
+    ArrayAccess,
+    BitAccess,
+    Literal,
+    Identifier,
+    ParseResult,
+)
+from .exceptions import DeclarationParseError, ImplementationParseError
+from .xml_extractor import TcPOUExtractor, POUContent, SourceLocation
+
+
+class TypeSpec:
+    """Wrapper to distinguish type specifications from identifiers."""
+    def __init__(self, value):
+        self.value = value
+    def __repr__(self):
+        return f"TypeSpec({self.value!r})"
+
+
+class InitialValue:
+    """Wrapper to distinguish initial values from identifiers."""
+    def __init__(self, value):
+        self.value = value
+    def __repr__(self):
+        return f"InitialValue({self.value!r})"
+
+
+class DeclarationTransformer(Transformer):
+    """Transform parse tree to AST for declarations."""
+
+    def start(self, items):
+        return items[0] if items else None
+
+    def action_declaration(self, items):
+        """Transform action declaration (VAR blocks only, no POU header)."""
+        var_blocks = [item for item in items if isinstance(item, VariableBlock)]
+        return var_blocks  # Return list of VariableBlock
+
+    def pou_declaration(self, items):
+        header = items[0]
+        var_blocks = [item for item in items[1:] if isinstance(item, VariableBlock)]
+        return POUDeclaration(
+            pou_type=header["pou_type"],
+            name=header["name"],
+            return_type=header.get("return_type"),
+            var_blocks=var_blocks,
+        )
+
+    def pou_header(self, items):
+        if len(items) == 2:
+            # PROGRAM/FUNCTION_BLOCK name
+            pou_type = str(items[0]).upper()
+            if pou_type == "FUNCTION_BLOCK":
+                pou_type = "FUNCTION_BLOCK"
+            return {"pou_type": pou_type, "name": str(items[1])}
+        else:
+            # FUNCTION name : return_type
+            return_type = items[2]
+            if isinstance(return_type, TypeSpec):
+                return_type = self._stringify_type(return_type.value)
+            return {
+                "pou_type": "FUNCTION",
+                "name": str(items[1]),
+                "return_type": return_type,
+            }
+
+    def pou_end(self, items):
+        return None  # Not needed in AST
+
+    def var_block(self, items):
+        attributes = []
+        block_type = None
+        qualifiers = []
+        variables = []
+
+        for item in items:
+            if isinstance(item, str):
+                if item.startswith("{"):
+                    attributes.append(item)
+                elif item.upper() in (
+                    "VAR",
+                    "VAR_INPUT",
+                    "VAR_OUTPUT",
+                    "VAR_IN_OUT",
+                    "VAR_GLOBAL",
+                    "VAR_EXTERNAL",
+                    "VAR_TEMP",
+                    "VAR_STAT",
+                ):
+                    block_type = item.upper()
+                elif item.upper() in ("CONSTANT", "RETAIN", "PERSISTENT"):
+                    qualifiers.append(item.upper())
+            elif isinstance(item, Variable):
+                variables.append(item)
+
+        return VariableBlock(
+            block_type=block_type or "VAR",
+            variables=variables,
+            qualifiers=qualifiers,
+            attributes=attributes,
+        )
+
+    def var_block_start(self, items):
+        return str(items[0]).upper()
+
+    def var_qualifier(self, items):
+        return str(items[0]).upper()
+
+    def var_block_end(self, items):
+        return None
+
+    def var_declaration(self, items):
+        # Collect all parts
+        attributes = []
+        names = []
+        hw_address = None
+        type_spec = None
+        initial_value = None
+
+        for item in items:
+            if isinstance(item, TypeSpec):
+                # Type specification (wrapped to distinguish from identifiers)
+                type_spec = item.value
+            elif isinstance(item, InitialValue):
+                # Initial value (wrapped to distinguish from identifiers)
+                initial_value = item.value
+            elif isinstance(item, str):
+                if item.startswith("{"):
+                    attributes.append(item)
+                elif item.startswith("%"):
+                    hw_address = item
+                else:
+                    names.append(item)
+            elif isinstance(item, Token) and item.type == "IDENTIFIER":
+                names.append(str(item))
+            elif isinstance(item, dict) and "hw_address" in item:
+                hw_address = item["hw_address"]
+            else:
+                # Other types (e.g., ArrayType)
+                if type_spec is None and isinstance(item, ArrayType):
+                    type_spec = item
+
+        # Return single Variable for first name (common case)
+        # If multiple names, return list
+        if len(names) == 1:
+            return Variable(
+                name=names[0],
+                type_name=self._stringify_type(type_spec),
+                initial_value=initial_value,
+                hw_address=hw_address,
+                attributes=attributes,
+            )
+        else:
+            return [
+                Variable(
+                    name=name,
+                    type_name=self._stringify_type(type_spec),
+                    initial_value=initial_value,
+                    hw_address=hw_address,
+                    attributes=attributes,
+                )
+                for name in names
+            ]
+
+    def _stringify_type(self, type_spec) -> str:
+        """Convert type specification to string."""
+        if isinstance(type_spec, TypeSpec):
+            return self._stringify_type(type_spec.value)
+        elif isinstance(type_spec, str):
+            return type_spec
+        elif isinstance(type_spec, Token):
+            return str(type_spec)
+        elif isinstance(type_spec, ArrayType):
+            dims = ", ".join(f"{lo}..{hi}" for lo, hi in type_spec.dimensions)
+            return f"ARRAY[{dims}] OF {type_spec.element_type}"
+        elif isinstance(type_spec, Tree):
+            return self._tree_to_type_string(type_spec)
+        return str(type_spec)
+
+    def _tree_to_type_string(self, tree: Tree) -> str:
+        """Convert a parse tree to type string."""
+        if tree.data == "primitive_type":
+            return str(tree.children[0]).upper()
+        elif tree.data == "user_type":
+            return str(tree.children[0])
+        elif tree.data == "string_type_with_size":
+            base = str(tree.children[0]).upper()
+            if len(tree.children) > 1:
+                return f"{base}[{tree.children[1]}]"
+            return base
+        elif tree.data == "array_type":
+            # Process array dimensions and element type
+            return self._stringify_type(tree)
+        elif tree.data == "type_spec":
+            return self._tree_to_type_string(tree.children[0])
+        return str(tree)
+
+    def hw_location(self, items):
+        return {"hw_address": str(items[0])}
+
+    def type_spec(self, items):
+        # Wrap in TypeSpec to distinguish from identifiers
+        value = items[0]
+        if isinstance(value, TypeSpec):
+            return value
+        elif isinstance(value, ArrayType):
+            return TypeSpec(value)
+        else:
+            return TypeSpec(value)
+
+    def primitive_type(self, items):
+        return str(items[0]).upper()
+
+    def string_type_with_size(self, items):
+        base = str(items[0]).upper()
+        if len(items) > 1:
+            return f"{base}[{items[1]}]"
+        return base
+
+    def array_type(self, items):
+        # items: range1, [range2, ...], element_type
+        dimensions = []
+        element_type = None
+        for item in items:
+            if isinstance(item, tuple):
+                dimensions.append(item)
+            else:
+                element_type = self._stringify_type(item)
+        return ArrayType(element_type=element_type or "UNKNOWN", dimensions=dimensions)
+
+    def array_bound(self, items):
+        # Return the bound value (integer or identifier string)
+        val = items[0]
+        if isinstance(val, int):
+            return val
+        elif isinstance(val, Token):
+            return str(val)
+        return val
+
+    def array_range(self, items):
+        # items are already processed by array_bound
+        return (items[0], items[1])
+
+    def integer_value(self, items):
+        val = items[-1]
+        negative = len(items) > 1
+        if isinstance(val, Token):
+            if val.type == "HEX_NUMBER":
+                result = int(str(val).replace("16#", "").replace("_", ""), 16)
+            elif val.type == "BINARY_NUMBER":
+                result = int(str(val).replace("2#", "").replace("_", ""), 2)
+            elif val.type == "OCTAL_NUMBER":
+                result = int(str(val).replace("8#", "").replace("_", ""), 8)
+            else:
+                result = int(str(val))
+        else:
+            result = int(val)
+        return -result if negative else result
+
+    def pointer_type(self, items):
+        return f"POINTER TO {self._stringify_type(items[0])}"
+
+    def reference_type(self, items):
+        return f"REFERENCE TO {self._stringify_type(items[0])}"
+
+    def user_type(self, items):
+        return str(items[0])
+
+    def initial_value(self, items):
+        # Wrap in InitialValue to distinguish from identifiers
+        return InitialValue(items[0])
+
+    def literal(self, items):
+        return items[0]
+
+    def boolean_literal(self, items):
+        return str(items[0]).upper() == "TRUE"
+
+    def numeric_literal(self, items):
+        negative = False
+        val = items[-1]
+        if len(items) > 1:
+            negative = True
+
+        if isinstance(val, Token):
+            if val.type == "FLOAT":
+                result = float(str(val))
+            elif val.type == "HEX_NUMBER":
+                result = int(str(val).replace("16#", "").replace("_", ""), 16)
+            elif val.type == "BINARY_NUMBER":
+                result = int(str(val).replace("2#", "").replace("_", ""), 2)
+            elif val.type == "OCTAL_NUMBER":
+                result = int(str(val).replace("8#", "").replace("_", ""), 8)
+            else:
+                result = int(str(val))
+        else:
+            result = val
+
+        return -result if negative else result
+
+    def string_literal(self, items):
+        s = str(items[0])
+        # Remove quotes
+        if s.startswith('"') and s.endswith('"'):
+            return s[1:-1]
+        if s.startswith("'") and s.endswith("'"):
+            return s[1:-1]
+        return s
+
+    def time_literal(self, items):
+        return str(items[0])
+
+    def array_initializer(self, items):
+        return list(items)
+
+    def struct_initializer(self, items):
+        result = {}
+        for item in items:
+            if isinstance(item, tuple):
+                result[item[0]] = item[1]
+        return result
+
+    def field_init(self, items):
+        return (str(items[0]), items[1])
+
+    def attribute(self, items):
+        return "{" + str(items[0]).strip() + "}"
+
+    def attribute_content(self, items):
+        return str(items[0])
+
+    # Pass through tokens
+    def IDENTIFIER(self, token):
+        return str(token)
+
+    def HW_ADDRESS(self, token):
+        return str(token)
+
+
+class ImplementationTransformer(Transformer):
+    """Transform parse tree to AST for implementation code."""
+
+    def start(self, items):
+        return [item for item in items if item is not None]
+
+    # Statements
+
+    def assignment_stmt(self, items):
+        items = self._filter_keyword_tokens(items, {'ASSIGN'})
+        return Assignment(target=items[0], expression=items[1])
+
+    def fb_invocation_stmt(self, items):
+        instance = items[0]
+        input_params = {}
+        output_params = {}
+
+        for item in items[1:]:
+            if isinstance(item, dict):
+                if item.get("param_type") == "input":
+                    input_params[item["name"]] = item["value"]
+                elif item.get("param_type") == "output":
+                    output_params[item["name"]] = item.get("target")
+
+        return FBInvocation(
+            instance=instance, input_params=input_params, output_params=output_params
+        )
+
+    def input_param(self, items):
+        items = self._filter_keyword_tokens(items, {'ASSIGN'})
+        name = str(items[0])
+        value = items[1] if len(items) > 1 else None
+        return {"param_type": "input", "name": name, "value": value}
+
+    def output_param(self, items):
+        items = self._filter_keyword_tokens(items, {'OUTPUT_ARROW'})
+        name = str(items[0])
+        target = items[1] if len(items) > 1 else None
+        return {"param_type": "output", "name": name, "target": target}
+
+    def function_call_stmt(self, items):
+        return items[0]
+
+    def if_stmt(self, items):
+        # Filter out keyword tokens (IF, THEN, END_IF)
+        keyword_types = {'IF', 'THEN', 'END_IF'}
+        filtered_items = [
+            item for item in items
+            if not (isinstance(item, Token) and item.type in keyword_types)
+        ]
+
+        condition = filtered_items[0]
+        then_body = []
+        elsif_clauses = []
+        else_body = None
+
+        i = 1
+        while i < len(filtered_items):
+            item = filtered_items[i]
+            if isinstance(item, dict):
+                if item.get("type") == "elsif":
+                    elsif_clauses.append((item["condition"], item["body"]))
+                elif item.get("type") == "else":
+                    else_body = item["body"]
+            elif item is not None and not isinstance(item, dict):
+                then_body.append(item)
+            i += 1
+
+        return IfStatement(
+            condition=condition,
+            then_body=then_body,
+            elsif_clauses=elsif_clauses,
+            else_body=else_body,
+        )
+
+    def _filter_keyword_tokens(self, items, keywords):
+        """Filter out keyword tokens from items list."""
+        return [
+            item for item in items
+            if not (isinstance(item, Token) and item.type in keywords)
+        ]
+
+    def elsif_clause(self, items):
+        items = self._filter_keyword_tokens(items, {'ELSIF', 'THEN'})
+        condition = items[0]
+        body = [item for item in items[1:] if item is not None]
+        return {"type": "elsif", "condition": condition, "body": body}
+
+    def else_clause(self, items):
+        items = self._filter_keyword_tokens(items, {'ELSE'})
+        body = [item for item in items if item is not None]
+        return {"type": "else", "body": body}
+
+    def case_stmt(self, items):
+        items = self._filter_keyword_tokens(items, {'CASE', 'OF', 'END_CASE'})
+        expression = items[0]
+        cases = []
+        else_body = None
+
+        for item in items[1:]:
+            if isinstance(item, dict):
+                if item.get("type") == "case_element":
+                    cases.append((item["labels"], item["body"]))
+                elif item.get("type") == "else":
+                    else_body = item["body"]
+
+        return CaseStatement(expression=expression, cases=cases, else_body=else_body)
+
+    def case_element(self, items):
+        labels = []
+        body = []
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "case_label":
+                labels.append(item["value"])
+            elif item is not None:
+                body.append(item)
+        return {"type": "case_element", "labels": labels, "body": body}
+
+    def case_label(self, items):
+        if len(items) == 1:
+            return {"type": "case_label", "value": items[0]}
+        else:
+            return {"type": "case_label", "value": (items[0], items[1])}
+
+    def by_clause(self, items):
+        items = self._filter_keyword_tokens(items, {'BY'})
+        return {"type": "by", "value": items[0]}
+
+    def for_stmt(self, items):
+        items = self._filter_keyword_tokens(items, {'FOR', 'ASSIGN', 'TO', 'BY', 'DO', 'END_FOR'})
+        var_name = str(items[0])
+        from_expr = items[1]
+        to_expr = items[2]
+        by_expr = None
+        body = []
+
+        i = 3
+        while i < len(items):
+            item = items[i]
+            if isinstance(item, dict) and item.get("type") == "by":
+                by_expr = item["value"]
+            elif item is not None:
+                body.append(item)
+            i += 1
+
+        return ForStatement(
+            variable=var_name,
+            from_expr=from_expr,
+            to_expr=to_expr,
+            by_expr=by_expr,
+            body=body,
+        )
+
+    def while_stmt(self, items):
+        items = self._filter_keyword_tokens(items, {'WHILE', 'DO', 'END_WHILE'})
+        condition = items[0]
+        body = [item for item in items[1:] if item is not None]
+        return WhileStatement(condition=condition, body=body)
+
+    def repeat_stmt(self, items):
+        items = self._filter_keyword_tokens(items, {'REPEAT', 'UNTIL', 'END_REPEAT'})
+        condition = items[-1]
+        body = [item for item in items[:-1] if item is not None]
+        return RepeatStatement(body=body, condition=condition)
+
+    def exit_stmt(self, items):
+        return ExitStatement()
+
+    def continue_stmt(self, items):
+        return ContinueStatement()
+
+    def return_stmt(self, items):
+        expr = items[0] if items else None
+        return ReturnStatement(expression=expr)
+
+    def empty_stmt(self, items):
+        return None
+
+    def expression_stmt(self, items):
+        return ExpressionStatement(expression=items[0])
+
+    # Expressions
+
+    def or_xor_expr(self, items):
+        if len(items) == 1:
+            return items[0]
+        result = items[0]
+        i = 1
+        while i < len(items):
+            op = str(items[i]).upper()
+            right = items[i + 1]
+            result = BinaryOp(operator=op, left=result, right=right)
+            i += 2
+        return result
+
+    def and_expr(self, items):
+        if len(items) == 1:
+            return items[0]
+        result = items[0]
+        i = 1
+        while i < len(items):
+            op = str(items[i]).upper()
+            right = items[i + 1]
+            result = BinaryOp(operator=op, left=result, right=right)
+            i += 2
+        return result
+
+    def equality(self, items):
+        if len(items) == 1:
+            return items[0]
+        result = items[0]
+        i = 1
+        while i < len(items):
+            op = items[i]
+            right = items[i + 1]
+            result = BinaryOp(operator=op, left=result, right=right)
+            i += 2
+        return result
+
+    def relational(self, items):
+        if len(items) == 1:
+            return items[0]
+        result = items[0]
+        i = 1
+        while i < len(items):
+            op = items[i]
+            right = items[i + 1]
+            result = BinaryOp(operator=op, left=result, right=right)
+            i += 2
+        return result
+
+    def eq_op(self, items):
+        return str(items[0])
+
+    def rel_op(self, items):
+        return str(items[0])
+
+    def eq(self, items):
+        return "="
+
+    def ne(self, items):
+        return "<>"
+
+    def le(self, items):
+        return "<="
+
+    def ge(self, items):
+        return ">="
+
+    def lt(self, items):
+        return "<"
+
+    def gt(self, items):
+        return ">"
+
+    def add_expr(self, items):
+        if len(items) == 1:
+            return items[0]
+        result = items[0]
+        i = 1
+        while i < len(items):
+            op = str(items[i])
+            right = items[i + 1]
+            result = BinaryOp(operator=op, left=result, right=right)
+            i += 2
+        return result
+
+    def mul_expr(self, items):
+        if len(items) == 1:
+            return items[0]
+        result = items[0]
+        i = 1
+        while i < len(items):
+            op = str(items[i])
+            if op.upper() == "MOD":
+                op = "MOD"
+            right = items[i + 1]
+            result = BinaryOp(operator=op, left=result, right=right)
+            i += 2
+        return result
+
+    def exp_expr(self, items):
+        if len(items) == 1:
+            return items[0]
+        # items = [left, POWER/EXPT_token, right] - right is already processed by recursion
+        op = str(items[1]).upper()
+        # Normalize EXPT keyword to ** operator for consistent AST
+        if op == "EXPT":
+            op = "**"
+        return BinaryOp(operator=op, left=items[0], right=items[2])
+
+    def not_expr(self, items):
+        op = str(items[0]).upper()
+        return UnaryOp(operator=op, operand=items[1])
+
+    def neg_expr(self, items):
+        op = str(items[0])
+        return UnaryOp(operator=op, operand=items[1])
+
+    def primary(self, items):
+        return items[0]
+
+    def function_call(self, items):
+        # First item can be IDENTIFIER (Token/str) or a variable (MemberAccess, etc.)
+        first = items[0]
+        if isinstance(first, str):
+            name = first
+            instance = Identifier(name=name)
+        elif isinstance(first, Token):
+            name = str(first)
+            instance = Identifier(name=name)
+        else:
+            # It's a variable expression (MemberAccess, etc.)
+            instance = first
+            # For name, we try to get a reasonable string representation
+            if isinstance(first, Identifier):
+                name = first.name
+            elif isinstance(first, MemberAccess):
+                name = first.member  # Use the method name
+            else:
+                name = str(first)
+
+        args = []
+        input_params = {}
+        output_params = {}
+        has_fb_style_params = False
+
+        for item in items[1:]:
+            if isinstance(item, dict):
+                if item.get("param_type") == "input":
+                    input_params[item["name"]] = item["value"]
+                    has_fb_style_params = True
+                elif item.get("param_type") == "output":
+                    output_params[item["name"]] = item.get("target")
+                    has_fb_style_params = True
+            else:
+                args.append(item)
+
+        # If we have FB-style parameters (named with := or =>), return FBInvocation
+        if has_fb_style_params:
+            return FBInvocation(
+                instance=instance,
+                input_params=input_params,
+                output_params=output_params,
+            )
+
+        return FunctionCall(name=name, arguments=args, named_args={})
+
+    def call_arg(self, items):
+        # Simple positional argument
+        return items[0]
+
+    def named_input_arg(self, items):
+        items = self._filter_keyword_tokens(items, {'ASSIGN'})
+        value = items[1] if len(items) > 1 else None
+        return {"param_type": "input", "name": str(items[0]), "value": value}
+
+    def named_output_arg(self, items):
+        items = self._filter_keyword_tokens(items, {'OUTPUT_ARROW'})
+        target = items[1] if len(items) > 1 else None
+        return {"param_type": "output", "name": str(items[0]), "target": target}
+
+    def variable(self, items):
+        base = Identifier(name=str(items[0]))
+        result = base
+
+        for accessor in items[1:]:
+            if isinstance(accessor, dict):
+                if accessor["type"] == "member":
+                    result = MemberAccess(base=result, member=accessor["name"])
+                elif accessor["type"] == "bit":
+                    result = BitAccess(base=result, bit_index=accessor["index"])
+                elif accessor["type"] == "array":
+                    result = ArrayAccess(base=result, indices=accessor["indices"])
+            else:
+                result = accessor
+
+        return result
+
+    def member_access(self, items):
+        return {"type": "member", "name": str(items[0])}
+
+    def bit_access(self, items):
+        return {"type": "bit", "index": int(str(items[0]))}
+
+    def array_access(self, items):
+        return {"type": "array", "indices": list(items)}
+
+    # Literals
+
+    def literal(self, items):
+        return items[0]
+
+    def true_lit(self, items):
+        return Literal(value=True, literal_type="bool")
+
+    def false_lit(self, items):
+        return Literal(value=False, literal_type="bool")
+
+    def float_lit(self, items):
+        return Literal(value=float(str(items[0])), literal_type="float")
+
+    def int_lit(self, items):
+        return Literal(value=int(str(items[0])), literal_type="int")
+
+    def hex_lit(self, items):
+        val = str(items[0]).replace("16#", "").replace("_", "")
+        return Literal(value=int(val, 16), literal_type="hex")
+
+    def bin_lit(self, items):
+        val = str(items[0]).replace("2#", "").replace("_", "")
+        return Literal(value=int(val, 2), literal_type="bin")
+
+    def oct_lit(self, items):
+        val = str(items[0]).replace("8#", "").replace("_", "")
+        return Literal(value=int(val, 8), literal_type="oct")
+
+    def string_lit(self, items):
+        s = str(items[0])
+        if s.startswith('"') and s.endswith('"'):
+            s = s[1:-1]
+        elif s.startswith("'") and s.endswith("'"):
+            s = s[1:-1]
+        return Literal(value=s, literal_type="string")
+
+    def time_lit(self, items):
+        return Literal(value=str(items[0]), literal_type="time")
+
+    def integer_value(self, items):
+        negative = False
+        val = items[-1]
+        if len(items) > 1:
+            negative = True
+
+        if isinstance(val, Token):
+            if val.type == "HEX_NUMBER":
+                result = int(str(val).replace("16#", "").replace("_", ""), 16)
+            elif val.type == "BINARY_NUMBER":
+                result = int(str(val).replace("2#", "").replace("_", ""), 2)
+            elif val.type == "OCTAL_NUMBER":
+                result = int(str(val).replace("8#", "").replace("_", ""), 8)
+            else:
+                result = int(str(val))
+        else:
+            result = int(val)
+
+        return -result if negative else result
+
+    # Token handlers
+    def IDENTIFIER(self, token):
+        return str(token)
+
+
+def _adjust_tree_positions(tree: Tree, location: SourceLocation) -> None:
+    """Recursively adjust all line/column/pos positions in a parse tree (in-place).
+
+    Converts positions from CDATA-relative to XML-file-relative.
+
+    Args:
+        tree: Lark parse tree to adjust
+        location: SourceLocation indicating where CDATA content starts in the XML
+    """
+
+    def adjust_token(token: Token) -> None:
+        """Adjust positions for a single token."""
+        if token.line is not None:
+            old_line = token.line
+            # Line adjustment: add the offset (location.line is 1-indexed, so subtract 1)
+            new_line = old_line + (location.line - 1)
+
+            # Column adjustment: only for first line of content
+            if old_line == 1 and token.column is not None:
+                new_column = token.column + (location.column - 1)
+            else:
+                new_column = token.column
+
+            # Position adjustment: add character offset
+            new_start_pos = None
+            new_end_pos = None
+            if token.start_pos is not None:
+                new_start_pos = token.start_pos + location.pos
+            if token.end_pos is not None:
+                new_end_pos = token.end_pos + location.pos
+
+            # end_line/end_column adjustment
+            new_end_line = token.end_line
+            new_end_column = token.end_column
+            if token.end_line is not None:
+                old_end_line = token.end_line
+                new_end_line = old_end_line + (location.line - 1)
+                # end_column needs adjustment if the end is on the original first line
+                if old_end_line == 1 and token.end_column is not None:
+                    new_end_column = token.end_column + (location.column - 1)
+
+            # Update token positions in place
+            # Token inherits from str (immutable), but position attrs are settable via __setattr__
+            object.__setattr__(token, "line", new_line)
+            object.__setattr__(token, "column", new_column)
+            object.__setattr__(token, "start_pos", new_start_pos)
+            object.__setattr__(token, "end_pos", new_end_pos)
+            object.__setattr__(token, "end_line", new_end_line)
+            object.__setattr__(token, "end_column", new_end_column)
+
+    def adjust_meta(meta) -> None:
+        """Adjust positions in a tree's meta object."""
+        if meta is None:
+            return
+
+        if hasattr(meta, "line") and meta.line is not None:
+            old_line = meta.line
+            new_line = old_line + (location.line - 1)
+
+            # Column adjustment for first line
+            new_column = meta.column
+            if old_line == 1 and meta.column is not None:
+                new_column = meta.column + (location.column - 1)
+
+            # Position adjustment
+            new_start_pos = meta.start_pos
+            new_end_pos = meta.end_pos
+            if meta.start_pos is not None:
+                new_start_pos = meta.start_pos + location.pos
+            if meta.end_pos is not None:
+                new_end_pos = meta.end_pos + location.pos
+
+            meta.line = new_line
+            meta.column = new_column
+            meta.start_pos = new_start_pos
+            meta.end_pos = new_end_pos
+
+        # Also adjust end_line/end_column if present
+        if hasattr(meta, "end_line") and meta.end_line is not None:
+            old_end_line = meta.end_line
+            meta.end_line = old_end_line + (location.line - 1)
+
+            # end_column needs adjustment if the end is on the original first line
+            if old_end_line == 1 and hasattr(meta, "end_column") and meta.end_column is not None:
+                meta.end_column = meta.end_column + (location.column - 1)
+
+    def walk_tree(node) -> None:
+        """Recursively walk and adjust all positions."""
+        if isinstance(node, Token):
+            adjust_token(node)
+        elif isinstance(node, Tree):
+            # Adjust meta positions
+            if hasattr(node, "meta"):
+                adjust_meta(node.meta)
+            # Recursively process children
+            for child in node.children:
+                walk_tree(child)
+
+    walk_tree(tree)
+
+
+class STParser:
+    """Main parser for TwinCAT Structured Text."""
+
+    def __init__(self):
+        self._grammar_dir = Path(__file__).parent
+        self._decl_parser = None
+        self._impl_parser = None
+        self._extractor = TcPOUExtractor()
+
+    @property
+    def decl_parser(self) -> Lark:
+        """Lazy-load declaration parser."""
+        if self._decl_parser is None:
+            grammar_path = self._grammar_dir / "declarations.lark"
+            self._decl_parser = Lark.open(
+                str(grammar_path),
+                parser="lalr",
+                propagate_positions=True,
+            )
+        return self._decl_parser
+
+    @property
+    def impl_parser(self) -> Lark:
+        """Lazy-load implementation parser."""
+        if self._impl_parser is None:
+            grammar_path = self._grammar_dir / "implementation.lark"
+            self._impl_parser = Lark.open(
+                str(grammar_path),
+                parser="lalr",
+                propagate_positions=True,
+            )
+        return self._impl_parser
+
+    def parse_file(self, path: str | Path) -> ParseResult:
+        """Parse a TcPOU file completely.
+
+        Args:
+            path: Path to the TcPOU XML file
+
+        Returns:
+            ParseResult with declaration AST, implementation AST, and actions
+        """
+        content = self._extractor.extract_file(path)
+        return self._parse_content(content)
+
+    def parse_string(self, xml_content: str, source: str = "<string>") -> ParseResult:
+        """Parse TcPOU XML from string.
+
+        Args:
+            xml_content: TcPOU XML as string
+            source: Source identifier for error messages
+
+        Returns:
+            ParseResult with declaration AST, implementation AST, and actions
+        """
+        content = self._extractor.extract_string(xml_content, source)
+        return self._parse_content(content)
+
+    def _parse_content(self, content: POUContent) -> ParseResult:
+        """Parse extracted POU content with position adjustment."""
+        # Parse declaration with position adjustment
+        declaration = self._parse_declarations_with_location(
+            content.declaration, content.declaration_location
+        )
+        # Handle empty declarations by creating a minimal POUDeclaration
+        if declaration is None:
+            declaration = POUDeclaration(
+                pou_type=content.pou_type,
+                name=content.name,
+                var_blocks=[],
+            )
+
+        # Parse implementation with position adjustment
+        implementation = self._parse_implementation_with_location(
+            content.implementation, content.implementation_location
+        )
+
+        actions = {}
+        for action in content.actions:
+            var_blocks = self._parse_action_declarations_with_location(
+                action.declaration, action.declaration_location
+            )
+            action_impl = self._parse_implementation_with_location(
+                action.implementation, action.implementation_location
+            )
+            actions[action.name] = ActionAST(
+                name=action.name,
+                var_blocks=var_blocks,
+                implementation=action_impl,
+            )
+
+        return ParseResult(
+            name=content.name,
+            pou_type=content.pou_type,
+            declaration=declaration,
+            implementation=implementation,
+            actions=actions,
+        )
+
+    def _parse_declarations_with_location(
+        self, text: str, location: SourceLocation | None
+    ) -> POUDeclaration | None:
+        """Parse declaration section with position adjustment."""
+        if not text or not text.strip():
+            return None
+
+        try:
+            tree = self.decl_parser.parse(text)
+            if location:
+                _adjust_tree_positions(tree, location)
+            transformer = DeclarationTransformer()
+            return transformer.transform(tree)
+        except Exception as e:
+            raise DeclarationParseError(f"Failed to parse declarations: {e}")
+
+    def _parse_action_declarations_with_location(
+        self, text: str | None, location: SourceLocation | None
+    ) -> list[VariableBlock]:
+        """Parse action declaration section with position adjustment."""
+        if not text or not text.strip():
+            return []
+
+        try:
+            tree = self.decl_parser.parse(text)
+            if location:
+                _adjust_tree_positions(tree, location)
+            transformer = DeclarationTransformer()
+            result = transformer.transform(tree)
+            if isinstance(result, POUDeclaration):
+                return result.var_blocks
+            return result
+        except Exception as e:
+            raise DeclarationParseError(f"Failed to parse action declarations: {e}")
+
+    def _parse_implementation_with_location(
+        self, text: str, location: SourceLocation | None
+    ) -> list:
+        """Parse implementation section with position adjustment."""
+        if not text or not text.strip():
+            return []
+
+        try:
+            tree = self.impl_parser.parse(text)
+            if location:
+                _adjust_tree_positions(tree, location)
+            transformer = ImplementationTransformer()
+            return transformer.transform(tree)
+        except Exception as e:
+            raise ImplementationParseError(f"Failed to parse implementation: {e}")
+
+    def parse_declarations(self, text: str) -> POUDeclaration | None:
+        """Parse declaration section to AST.
+
+        Args:
+            text: ST declaration code (PROGRAM/FUNCTION_BLOCK header + VAR blocks)
+
+        Returns:
+            POUDeclaration AST node, or None if text is empty
+        """
+        if not text or not text.strip():
+            return None
+
+        try:
+            tree = self.decl_parser.parse(text)
+            transformer = DeclarationTransformer()
+            return transformer.transform(tree)
+        except Exception as e:
+            raise DeclarationParseError(f"Failed to parse declarations: {e}")
+
+    def parse_action_declarations(self, text: str | None) -> list[VariableBlock]:
+        """Parse action declaration section (VAR blocks only, no POU header).
+
+        Args:
+            text: ST declaration code with only VAR blocks (no PROGRAM/FUNCTION_BLOCK header)
+
+        Returns:
+            List of VariableBlock AST nodes, empty list if text is empty
+        """
+        if not text or not text.strip():
+            return []
+
+        try:
+            tree = self.decl_parser.parse(text)
+            transformer = DeclarationTransformer()
+            result = transformer.transform(tree)
+            # Result is either POUDeclaration (if it has a header) or list[VariableBlock]
+            if isinstance(result, POUDeclaration):
+                return result.var_blocks
+            return result  # list[VariableBlock] from action_declaration
+        except Exception as e:
+            raise DeclarationParseError(f"Failed to parse action declarations: {e}")
+
+    def parse_implementation(self, text: str) -> list:
+        """Parse implementation section to AST.
+
+        Args:
+            text: ST implementation code (statements)
+
+        Returns:
+            List of statement AST nodes
+        """
+        if not text or not text.strip():
+            return []
+
+        try:
+            tree = self.impl_parser.parse(text)
+            transformer = ImplementationTransformer()
+            return transformer.transform(tree)
+        except Exception as e:
+            raise ImplementationParseError(f"Failed to parse implementation: {e}")
+
+    def parse_declarations_tree(
+        self, text: str, location: SourceLocation | None = None
+    ) -> Tree | None:
+        """Parse declaration section and return raw Lark parse tree (before transformation).
+
+        Args:
+            text: ST declaration code
+            location: Optional SourceLocation to adjust positions to be XML-absolute
+
+        Returns:
+            Lark parse tree with positions adjusted if location provided
+        """
+        if not text or not text.strip():
+            return None
+        try:
+            tree = self.decl_parser.parse(text)
+            if location:
+                _adjust_tree_positions(tree, location)
+            return tree
+        except Exception as e:
+            raise DeclarationParseError(f"Failed to parse declarations: {e}")
+
+    def parse_implementation_tree(
+        self, text: str, location: SourceLocation | None = None
+    ) -> Tree | None:
+        """Parse implementation section and return raw Lark parse tree (before transformation).
+
+        Args:
+            text: ST implementation code
+            location: Optional SourceLocation to adjust positions to be XML-absolute
+
+        Returns:
+            Lark parse tree with positions adjusted if location provided
+        """
+        if not text or not text.strip():
+            return None
+        try:
+            tree = self.impl_parser.parse(text)
+            if location:
+                _adjust_tree_positions(tree, location)
+            return tree
+        except Exception as e:
+            raise ImplementationParseError(f"Failed to parse implementation: {e}")
