@@ -24,7 +24,9 @@ from chunkhound.core.types.common import (
 )
 from chunkhound.parsers.twincat.xml_extractor import (
     ActionContent,
+    MethodContent,
     POUContent,
+    PropertyContent,
     SourceLocation,
     TcPOUExtractor,
 )
@@ -134,12 +136,38 @@ class TwinCATParser:
                 logger.error(error_msg)
                 self._parse_errors.append(error_msg)
 
-        # 3. Parse actions → create action chunks
+        # 3. Parse implementation for control flow blocks (all POU types)
+        if content.implementation and content.implementation.strip():
+            block_chunks = self._extract_blocks_from_implementation(
+                content.implementation,
+                content.implementation_location,
+                content.name,
+                content.pou_type.upper(),
+                file_path,
+                file_id,
+            )
+            chunks.extend(block_chunks)
+
+        # 4. Parse actions → create action chunks
         for action in content.actions:
             action_chunks = self._extract_action_chunks(
                 action, content, file_path, file_id
             )
             chunks.extend(action_chunks)
+
+        # 5. Parse methods → create method chunks
+        for method in content.methods:
+            method_chunks = self._extract_method_chunks(
+                method, content, file_path, file_id
+            )
+            chunks.extend(method_chunks)
+
+        # 6. Parse properties → create property chunks
+        for prop in content.properties:
+            property_chunks = self._extract_property_chunks(
+                prop, content, file_path, file_id
+            )
+            chunks.extend(property_chunks)
 
         return chunks
 
@@ -202,6 +230,7 @@ class TwinCATParser:
         file_id: FileId | None,
         declaration_location: SourceLocation | None = None,
         action_name: str | None = None,
+        method_name: str | None = None,
     ) -> list[Chunk]:
         """Walk Lark tree and extract VARIABLE chunks from VAR blocks.
 
@@ -217,6 +246,7 @@ class TwinCATParser:
             declaration_location: Location of declaration in XML. Defaults to
                 content.declaration_location if not provided.
             action_name: If extracting from an action, the action name for metadata
+            method_name: If extracting from a method, the method name for metadata
         """
         chunks: list[Chunk] = []
 
@@ -266,6 +296,7 @@ class TwinCATParser:
                             constant,
                             location,
                             action_name,
+                            method_name,
                         )
                         chunks.extend(var_chunks)
 
@@ -283,6 +314,7 @@ class TwinCATParser:
         constant: bool,
         declaration_location: SourceLocation | None = None,
         action_name: str | None = None,
+        method_name: str | None = None,
     ) -> list[Chunk]:
         """Extract chunk(s) from a var_declaration node.
 
@@ -336,7 +368,7 @@ class TwinCATParser:
             chunk_type = ChunkType.FIELD
             kind = "field"
 
-        # Build metadata - include action_name if this is an action variable
+        # Build metadata - include action_name/method_name if in that context
         metadata: dict[str, Any] = {
             "kind": kind,
             "pou_type": content.pou_type,
@@ -350,6 +382,8 @@ class TwinCATParser:
         }
         if action_name:
             metadata["action_name"] = action_name
+        if method_name:
+            metadata["method_name"] = method_name
 
         # Create a chunk for each variable name
         for var_name in var_names:
@@ -546,6 +580,165 @@ class TwinCATParser:
                 logger.error(error_msg)
                 self._parse_errors.append(error_msg)
 
+        # Parse action implementation for control flow blocks
+        if action.implementation and action.implementation.strip():
+            block_chunks = self._extract_blocks_from_implementation(
+                action.implementation,
+                action.implementation_location,
+                content.name,
+                content.pou_type.upper(),
+                file_path,
+                file_id,
+                action_name=action.name,
+            )
+            chunks.extend(block_chunks)
+
+        return chunks
+
+    def _extract_method_chunks(
+        self,
+        method: MethodContent,
+        content: POUContent,
+        file_path: Path | None,
+        file_id: FileId | None,
+    ) -> list[Chunk]:
+        """Create chunks for a method.
+
+        Creates:
+        1. A METHOD chunk containing the combined declaration + implementation
+        2. FIELD chunks for variables declared in the method
+        3. BLOCK chunks for control flow statements in the method
+        """
+        chunks: list[Chunk] = []
+
+        # Combine method declaration and implementation
+        method_code = method.declaration
+        if method.implementation and method.implementation.strip():
+            if method_code:
+                method_code += "\n\n"
+            method_code += method.implementation
+
+        if not method_code.strip():
+            return chunks
+
+        # Use method's declaration location for start_line
+        start_line = 1
+        if method.declaration_location:
+            start_line = method.declaration_location.line
+        elif method.implementation_location:
+            start_line = method.implementation_location.line
+
+        end_line = start_line + method_code.count("\n")
+
+        # Create the main METHOD chunk
+        chunk = Chunk(
+            symbol=method.name,
+            start_line=LineNumber(start_line),
+            end_line=LineNumber(end_line),
+            code=method_code,
+            chunk_type=ChunkType.METHOD,
+            file_id=file_id or FileId(0),
+            language=Language.TWINCAT,
+            file_path=FilePath(str(file_path)) if file_path else None,
+            metadata={
+                "kind": "method",
+                "pou_type": content.pou_type,
+                "pou_name": content.name,
+                "method_id": method.id,
+            },
+        )
+        chunks.append(chunk)
+
+        # Parse method declaration for variables
+        if method.declaration and method.declaration.strip():
+            try:
+                decl_tree = self.decl_parser.parse(method.declaration)
+                var_chunks = self._extract_variable_chunks_from_tree(
+                    decl_tree,
+                    content,
+                    file_path,
+                    file_id,
+                    declaration_location=method.declaration_location,
+                    method_name=method.name,
+                )
+                chunks.extend(var_chunks)
+            except LarkError as e:
+                error_msg = f"Method '{method.name}' declaration parse error: {e}"
+                logger.error(error_msg)
+                self._parse_errors.append(error_msg)
+
+        # Parse method implementation for control flow blocks
+        if method.implementation and method.implementation.strip():
+            block_chunks = self._extract_blocks_from_implementation(
+                method.implementation,
+                method.implementation_location,
+                content.name,
+                content.pou_type.upper(),
+                file_path,
+                file_id,
+                method_name=method.name,
+            )
+            chunks.extend(block_chunks)
+
+        return chunks
+
+    def _extract_property_chunks(
+        self,
+        prop: PropertyContent,
+        content: POUContent,
+        file_path: Path | None,
+        file_id: FileId | None,
+    ) -> list[Chunk]:
+        """Create chunks for a property.
+
+        Creates:
+        1. A PROPERTY chunk containing declaration + GET/SET implementations
+        """
+        chunks: list[Chunk] = []
+
+        # Combine property declaration and accessor implementations
+        property_code = prop.declaration
+
+        if prop.get and prop.get.implementation and prop.get.implementation.strip():
+            if property_code:
+                property_code += "\n\n// GET\n"
+            property_code += prop.get.implementation
+
+        if prop.set and prop.set.implementation and prop.set.implementation.strip():
+            if property_code:
+                property_code += "\n\n// SET\n"
+            property_code += prop.set.implementation
+
+        if not property_code.strip():
+            return chunks
+
+        # Calculate start_line from property declaration location
+        start_line = 1
+        if prop.declaration_location:
+            start_line = prop.declaration_location.line
+        end_line = start_line + property_code.count("\n")
+
+        # Create the main PROPERTY chunk
+        chunk = Chunk(
+            symbol=prop.name,
+            start_line=LineNumber(start_line),
+            end_line=LineNumber(end_line),
+            code=property_code,
+            chunk_type=ChunkType.PROPERTY,
+            file_id=file_id or FileId(0),
+            language=Language.TWINCAT,
+            file_path=FilePath(str(file_path)) if file_path else None,
+            metadata={
+                "kind": "property",
+                "pou_type": content.pou_type,
+                "pou_name": content.name,
+                "property_id": prop.id,
+                "has_get": prop.get is not None,
+                "has_set": prop.set is not None,
+            },
+        )
+        chunks.append(chunk)
+
         return chunks
 
     def _adjust_line_number(
@@ -573,3 +766,188 @@ class TwinCATParser:
             if isinstance(child, Token) and child.type == token_type:
                 return str(child)
         return None
+
+    # =========================================================================
+    # Implementation Block Extraction (Tier 4 - Control Flow Blocks)
+    # =========================================================================
+
+    # Statement type to metadata kind mapping
+    _STATEMENT_KIND_MAP = {
+        "if_stmt": "if_block",
+        "case_stmt": "case_block",
+        "for_stmt": "for_loop",
+        "while_stmt": "while_loop",
+        "repeat_stmt": "repeat_loop",
+    }
+
+    def _extract_blocks_from_implementation(
+        self,
+        implementation: str,
+        implementation_location: SourceLocation | None,
+        pou_name: str,
+        pou_type: str,
+        file_path: Path | None,
+        file_id: FileId | None,
+        action_name: str | None = None,
+        method_name: str | None = None,
+    ) -> list[Chunk]:
+        """Parse implementation code and extract control flow blocks as BLOCK chunks.
+
+        Args:
+            implementation: Raw ST code from CDATA
+            implementation_location: XML position for line adjustment
+            pou_name: Parent POU name
+            pou_type: POU type (FUNCTION, FUNCTION_BLOCK, PROGRAM)
+            file_path: Path to source file
+            file_id: Database file ID
+            action_name: If parsing action implementation, the action name
+            method_name: If parsing method implementation, the method name
+
+        Returns:
+            List of BLOCK chunks for control flow statements
+            (IF, CASE, FOR, WHILE, REPEAT)
+        """
+        chunks: list[Chunk] = []
+
+        try:
+            tree = self.impl_parser.parse(implementation)
+        except LarkError as e:
+            if method_name:
+                context = f"method '{method_name}'"
+            elif action_name:
+                context = f"action '{action_name}'"
+            else:
+                context = f"FUNCTION '{pou_name}'"
+            error_msg = f"Implementation parse error in {context}: {e}"
+            logger.error(error_msg)
+            self._parse_errors.append(error_msg)
+            return chunks
+
+        # Find all control flow statement nodes
+        statement_nodes = self._find_statement_nodes(tree)
+
+        for node in statement_nodes:
+            chunk = self._create_block_chunk(
+                node,
+                implementation,
+                implementation_location,
+                pou_name,
+                pou_type,
+                file_path,
+                file_id,
+                action_name,
+                method_name,
+            )
+            if chunk:
+                chunks.append(chunk)
+
+        return chunks
+
+    def _find_statement_nodes(self, tree: Tree) -> list[Tree]:
+        """Recursively find all control flow statement nodes in parse tree.
+
+        Finds: if_stmt, case_stmt, for_stmt, while_stmt, repeat_stmt
+        """
+        results: list[Tree] = []
+
+        if isinstance(tree, Tree):
+            if tree.data in self._STATEMENT_KIND_MAP:
+                results.append(tree)
+            # Recurse into children to find nested statements
+            for child in tree.children:
+                if isinstance(child, Tree):
+                    results.extend(self._find_statement_nodes(child))
+
+        return results
+
+    def _create_block_chunk(
+        self,
+        node: Tree,
+        implementation: str,
+        implementation_location: SourceLocation | None,
+        pou_name: str,
+        pou_type: str,
+        file_path: Path | None,
+        file_id: FileId | None,
+        action_name: str | None,
+        method_name: str | None = None,
+    ) -> Chunk | None:
+        """Create BLOCK chunk from a control flow statement node.
+
+        Args:
+            node: Lark Tree node for a control flow statement
+            implementation: Full implementation source code
+            implementation_location: XML position for line adjustment
+            pou_name: Parent POU name
+            pou_type: POU type (FUNCTION, FUNCTION_BLOCK, PROGRAM)
+            file_path: Path to source file
+            file_id: Database file ID
+            action_name: Optional action name for action blocks
+            method_name: Optional method name for method blocks
+
+        Returns:
+            BLOCK chunk or None if unable to create
+        """
+        # Get line numbers from node metadata
+        if not hasattr(node, "meta") or node.meta is None:
+            return None
+
+        start_line = node.meta.line
+        end_line = node.meta.end_line or start_line
+
+        # Reconstruct code from the implementation using line numbers
+        code = self._reconstruct_code_from_lines(implementation, start_line, end_line)
+
+        # Adjust line numbers to XML-absolute
+        adjusted_start = self._adjust_line_number(start_line, implementation_location)
+        adjusted_end = self._adjust_line_number(end_line, implementation_location)
+
+        # Determine kind from statement type
+        kind = self._STATEMENT_KIND_MAP.get(node.data, "block")
+
+        # Generate symbol name based on statement type and line
+        symbol = f"{kind}_{adjusted_start}"
+
+        # Build metadata
+        metadata: dict[str, Any] = {
+            "kind": kind,
+            "pou_type": pou_type,
+            "pou_name": pou_name,
+        }
+        if action_name:
+            metadata["action_name"] = action_name
+        if method_name:
+            metadata["method_name"] = method_name
+
+        return Chunk(
+            symbol=symbol,
+            start_line=LineNumber(adjusted_start),
+            end_line=LineNumber(adjusted_end),
+            code=code,
+            chunk_type=ChunkType.BLOCK,
+            file_id=file_id or FileId(0),
+            language=Language.TWINCAT,
+            file_path=FilePath(str(file_path)) if file_path else None,
+            metadata=metadata,
+        )
+
+    def _reconstruct_code_from_lines(
+        self, source: str, start_line: int, end_line: int
+    ) -> str:
+        """Extract code substring using line numbers.
+
+        Args:
+            source: Full source code string
+            start_line: 1-based start line number
+            end_line: 1-based end line number (inclusive)
+
+        Returns:
+            Code substring spanning the specified lines
+        """
+        lines = source.splitlines()
+
+        # Convert to 0-based indices
+        start_idx = max(0, start_line - 1)
+        end_idx = min(len(lines), end_line)
+
+        return "\n".join(lines[start_idx:end_idx])
