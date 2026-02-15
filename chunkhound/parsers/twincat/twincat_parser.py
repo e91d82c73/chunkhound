@@ -231,6 +231,7 @@ class TwinCATParser:
             var_class = "local"  # default
             retain = False
             persistent = False
+            constant = False
 
             for child in var_block.children:
                 if isinstance(child, Tree):
@@ -243,13 +244,15 @@ class TwinCATParser:
                                 )
                                 break
                     elif child.data == "var_qualifier":
-                        # Check for RETAIN/PERSISTENT qualifiers
+                        # Check for RETAIN/PERSISTENT/CONSTANT qualifiers
                         for token in child.children:
                             if isinstance(token, Token):
                                 if token.type == "RETAIN":
                                     retain = True
                                 elif token.type == "PERSISTENT":
                                     persistent = True
+                                elif token.type == "CONSTANT":
+                                    constant = True
                     elif child.data == "var_declaration":
                         # Extract variable info
                         var_chunks = self._extract_var_declaration_chunk(
@@ -260,6 +263,7 @@ class TwinCATParser:
                             var_class,
                             retain,
                             persistent,
+                            constant,
                             location,
                             action_name,
                         )
@@ -276,6 +280,7 @@ class TwinCATParser:
         var_class: str,
         retain: bool,
         persistent: bool,
+        constant: bool,
         declaration_location: SourceLocation | None = None,
         action_name: str | None = None,
     ) -> list[Chunk]:
@@ -341,6 +346,7 @@ class TwinCATParser:
             "hw_address": hw_address,
             "retain": retain,
             "persistent": persistent,
+            "constant": constant,
         }
         if action_name:
             metadata["action_name"] = action_name
