@@ -619,6 +619,7 @@ END_VAR
         var_chunk = find_by_symbol(chunks, "nRetained")[0]
         assert var_chunk.metadata["retain"] is True
         assert var_chunk.metadata["persistent"] is False
+        assert var_chunk.metadata["constant"] is False
 
     def test_persistent_qualifier(self, twincat_parser):
         """Test PERSISTENT qualifier sets metadata['persistent'] = True."""
@@ -638,6 +639,7 @@ END_VAR
         var_chunk = find_by_symbol(chunks, "nPersistent")[0]
         assert var_chunk.metadata["persistent"] is True
         assert var_chunk.metadata["retain"] is False
+        assert var_chunk.metadata["constant"] is False
 
     def test_retain_persistent_combined(self, twincat_parser):
         """Test RETAIN PERSISTENT sets both qualifiers to True."""
@@ -657,6 +659,54 @@ END_VAR
         var_chunk = find_by_symbol(chunks, "stSaved")[0]
         assert var_chunk.metadata["retain"] is True
         assert var_chunk.metadata["persistent"] is True
+        assert var_chunk.metadata["constant"] is False
+
+
+# =============================================================================
+# TestConstantQualifier
+# =============================================================================
+
+
+class TestConstantQualifier:
+    """Test CONSTANT qualifier extraction."""
+
+    def test_constant_qualifier(self, twincat_parser):
+        """Test VAR CONSTANT sets metadata['constant'] = True."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR CONSTANT
+    MAX_SIZE : INT := 100;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.parse_content(xml)
+        assert_no_parse_errors(twincat_parser)
+        var_chunk = find_by_symbol(chunks, "MAX_SIZE")[0]
+        assert var_chunk.metadata["constant"] is True
+        assert var_chunk.metadata["retain"] is False
+        assert var_chunk.metadata["persistent"] is False
+
+    def test_non_constant_has_false(self, twincat_parser):
+        """Test regular VAR has metadata['constant'] = False."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    nValue : INT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.parse_content(xml)
+        assert_no_parse_errors(twincat_parser)
+        var_chunk = find_by_symbol(chunks, "nValue")[0]
+        assert var_chunk.metadata["constant"] is False
 
 
 # =============================================================================
@@ -1116,6 +1166,97 @@ END_VAR
         required_fields = ["kind", "pou_type", "pou_name", "action_id"]
         for field in required_fields:
             assert field in action_chunk.metadata, f"Missing field: {field}"
+
+
+# =============================================================================
+# TestParseErrorHandling
+# =============================================================================
+
+
+# =============================================================================
+# TestTwinCATLineNumbers
+# =============================================================================
+
+
+class TestTwinCATLineNumbers:
+    """Test that line numbers are absolute (relative to XML file, not CDATA)."""
+
+    def test_pou_chunk_has_absolute_start_line(self, twincat_parser, program_fixture):
+        """Test POU chunk start_line equals CDATA start position (line 4)."""
+        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        pou_chunks = find_by_type(chunks, ChunkType.PROGRAM)
+        assert len(pou_chunks) == 1
+        # Declaration CDATA starts at line 4 in example_program.TcPOU
+        assert pou_chunks[0].start_line == 4
+
+    def test_pou_chunk_end_line_spans_content(self, twincat_parser, program_fixture):
+        """Test POU end_line includes implementation (through line 20)."""
+        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        pou_chunks = find_by_type(chunks, ChunkType.PROGRAM)
+        assert len(pou_chunks) == 1
+        # Implementation CDATA content spans lines 16-20 (includes trailing newline)
+        # Line 19 is END_IF;, line 20 is the newline before ]]></ST>
+        assert pou_chunks[0].end_line == 20
+
+    def test_variable_chunks_have_absolute_line_numbers(
+        self, twincat_parser, program_fixture
+    ):
+        """Test that variable line numbers are > 3 (not CDATA-relative starting at 1)."""
+        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        var_chunks = find_by_type(chunks, ChunkType.FIELD)
+        assert len(var_chunks) >= 3  # bStart, bRunning, nCycleCount
+
+        for chunk in var_chunks:
+            # CDATA-relative would start at 1; absolute must be > 3
+            assert chunk.start_line > 3, (
+                f"Variable {chunk.symbol} has line {chunk.start_line}, "
+                "which appears to be CDATA-relative, not XML-absolute"
+            )
+
+    def test_variable_line_numbers_match_xml_positions(
+        self, twincat_parser, program_fixture
+    ):
+        """Test specific variable line numbers: bStart=6, bRunning=9, nCycleCount=12."""
+        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+
+        # bStart is on line 6
+        bstart_chunks = find_by_symbol(chunks, "bStart")
+        assert len(bstart_chunks) == 1
+        assert bstart_chunks[0].start_line == 6
+
+        # bRunning is on line 9
+        brunning_chunks = find_by_symbol(chunks, "bRunning")
+        assert len(brunning_chunks) == 1
+        assert brunning_chunks[0].start_line == 9
+
+        # nCycleCount is on line 12
+        ncycle_chunks = find_by_symbol(chunks, "nCycleCount")
+        assert len(ncycle_chunks) == 1
+        assert ncycle_chunks[0].start_line == 12
+
+    def test_line_numbers_are_not_cdata_relative(self, twincat_parser, program_fixture):
+        """Verify line numbers are > 3 (XML-absolute, not CDATA-relative starting at 1)."""
+        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+
+        for chunk in chunks:
+            # All chunks should have line numbers > 3 because:
+            # - Line 1: XML declaration
+            # - Line 2: TcPlcObject
+            # - Line 3: POU element
+            # - Line 4+: actual content in CDATA
+            assert chunk.start_line > 3, (
+                f"Chunk {chunk.symbol} has start_line={chunk.start_line}, "
+                "which suggests CDATA-relative numbering"
+            )
+            assert chunk.end_line >= chunk.start_line, (
+                f"Chunk {chunk.symbol} has invalid end_line={chunk.end_line} "
+                f"< start_line={chunk.start_line}"
+            )
 
 
 # =============================================================================
