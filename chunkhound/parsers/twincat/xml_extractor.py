@@ -30,6 +30,30 @@ class ActionContent:
 
 
 @dataclass
+class MethodContent:
+    """Content extracted from a Method element."""
+
+    name: str
+    id: str
+    declaration: str
+    implementation: str
+    declaration_location: SourceLocation | None = None
+    implementation_location: SourceLocation | None = None
+
+
+@dataclass
+class PropertyContent:
+    """Content extracted from a Property element."""
+
+    name: str
+    id: str
+    declaration: str
+    get: MethodContent | None = None
+    set: MethodContent | None = None
+    declaration_location: SourceLocation | None = None
+
+
+@dataclass
 class POUContent:
     """Content extracted from a TcPOU file."""
 
@@ -39,6 +63,8 @@ class POUContent:
     declaration: str
     implementation: str
     actions: list[ActionContent]
+    methods: list[MethodContent]
+    properties: list[PropertyContent]
     declaration_location: SourceLocation | None = None
     implementation_location: SourceLocation | None = None
 
@@ -215,6 +241,42 @@ class TcPOUExtractor:
                     if action_match:
                         action_search_start += action_match.end()
 
+        # Extract methods
+        methods = []
+        method_search_start = pou_search_start
+        for method_elem in pou.findall("Method"):
+            method = self._extract_method(
+                method_elem, source, xml_text, method_search_start
+            )
+            if method:
+                methods.append(method)
+                # Move search start past this method for the next one
+                if xml_text and method.name:
+                    method_match = re.search(
+                        rf'<Method\s+Name="{re.escape(method.name)}"',
+                        xml_text[method_search_start:],
+                    )
+                    if method_match:
+                        method_search_start += method_match.end()
+
+        # Extract properties
+        properties = []
+        property_search_start = pou_search_start
+        for property_elem in pou.findall("Property"):
+            prop = self._extract_property(
+                property_elem, source, xml_text, property_search_start
+            )
+            if prop:
+                properties.append(prop)
+                # Move search start past this property for the next one
+                if xml_text and prop.name:
+                    property_match = re.search(
+                        rf'<Property\s+Name="{re.escape(prop.name)}"',
+                        xml_text[property_search_start:],
+                    )
+                    if property_match:
+                        property_search_start += property_match.end()
+
         return POUContent(
             name=name,
             id=pou_id,
@@ -222,6 +284,8 @@ class TcPOUExtractor:
             declaration=declaration,
             implementation=implementation,
             actions=actions,
+            methods=methods,
+            properties=properties,
             declaration_location=declaration_location,
             implementation_location=implementation_location,
         )
@@ -283,6 +347,182 @@ class TcPOUExtractor:
         return ActionContent(
             name=name,
             id=action_id,
+            declaration=declaration,
+            implementation=implementation,
+            declaration_location=declaration_location,
+            implementation_location=implementation_location,
+        )
+
+    def _extract_method(
+        self,
+        method_elem: ET.Element,
+        source: str,
+        xml_text: str | None = None,
+        search_start: int = 0,
+    ) -> MethodContent | None:
+        """Extract content from a Method element."""
+        name = method_elem.get("Name")
+        if not name:
+            return None
+
+        method_id = method_elem.get("Id", "")
+
+        # Find method start position in XML for location tracking
+        method_search_start = search_start
+        if xml_text:
+            method_match = re.search(
+                rf'<Method\s+Name="{re.escape(name)}"', xml_text[search_start:]
+            )
+            if method_match:
+                method_search_start = search_start + method_match.start()
+
+        # Extract declaration
+        decl_elem = method_elem.find("Declaration")
+        declaration = decl_elem.text if decl_elem is not None and decl_elem.text else ""
+
+        # Find method declaration location
+        declaration_location = None
+        if xml_text and declaration:
+            declaration_location = self._find_cdata_content_start(
+                xml_text, method_search_start, ["Declaration"]
+            )
+
+        # Extract implementation
+        impl_elem = method_elem.find("Implementation")
+        if impl_elem is None:
+            implementation = ""
+        else:
+            st_elem = impl_elem.find("ST")
+            implementation = ""
+            if st_elem is not None and st_elem.text:
+                implementation = st_elem.text
+
+        # Find method implementation location
+        implementation_location = None
+        if xml_text and implementation:
+            implementation_location = self._find_cdata_content_start(
+                xml_text, method_search_start, ["Implementation", "ST"]
+            )
+
+        return MethodContent(
+            name=name,
+            id=method_id,
+            declaration=declaration,
+            implementation=implementation,
+            declaration_location=declaration_location,
+            implementation_location=implementation_location,
+        )
+
+    def _extract_property(
+        self,
+        property_elem: ET.Element,
+        source: str,
+        xml_text: str | None = None,
+        search_start: int = 0,
+    ) -> PropertyContent | None:
+        """Extract content from a Property element."""
+        name = property_elem.get("Name")
+        if not name:
+            return None
+
+        property_id = property_elem.get("Id", "")
+
+        # Find property start position in XML for location tracking
+        property_search_start = search_start
+        if xml_text:
+            property_match = re.search(
+                rf'<Property\s+Name="{re.escape(name)}"', xml_text[search_start:]
+            )
+            if property_match:
+                property_search_start = search_start + property_match.start()
+
+        # Extract declaration
+        decl_elem = property_elem.find("Declaration")
+        declaration = decl_elem.text if decl_elem is not None and decl_elem.text else ""
+
+        # Find declaration location
+        declaration_location = None
+        if xml_text and declaration:
+            declaration_location = self._find_cdata_content_start(
+                xml_text, property_search_start, ["Declaration"]
+            )
+
+        # Extract Get accessor
+        get_accessor = None
+        get_elem = property_elem.find("Get")
+        if get_elem is not None:
+            get_accessor = self._extract_property_accessor(
+                get_elem, "Get", source, xml_text, property_search_start
+            )
+
+        # Extract Set accessor
+        set_accessor = None
+        set_elem = property_elem.find("Set")
+        if set_elem is not None:
+            set_accessor = self._extract_property_accessor(
+                set_elem, "Set", source, xml_text, property_search_start
+            )
+
+        return PropertyContent(
+            name=name,
+            id=property_id,
+            declaration=declaration,
+            get=get_accessor,
+            set=set_accessor,
+            declaration_location=declaration_location,
+        )
+
+    def _extract_property_accessor(
+        self,
+        accessor_elem: ET.Element,
+        accessor_name: str,
+        source: str,
+        xml_text: str | None = None,
+        search_start: int = 0,
+    ) -> MethodContent:
+        """Extract content from a Get or Set accessor element."""
+        accessor_id = accessor_elem.get("Id", "")
+
+        # Find accessor start position
+        accessor_search_start = search_start
+        if xml_text:
+            accessor_match = re.search(
+                rf"<{accessor_name}(?:\s|>)", xml_text[search_start:]
+            )
+            if accessor_match:
+                accessor_search_start = search_start + accessor_match.start()
+
+        # Extract declaration
+        decl_elem = accessor_elem.find("Declaration")
+        declaration = decl_elem.text if decl_elem is not None and decl_elem.text else ""
+
+        # Find declaration location
+        declaration_location = None
+        if xml_text and declaration:
+            declaration_location = self._find_cdata_content_start(
+                xml_text, accessor_search_start, ["Declaration"]
+            )
+
+        # Extract implementation
+        impl_elem = accessor_elem.find("Implementation")
+        if impl_elem is None:
+            implementation = ""
+        else:
+            st_elem = impl_elem.find("ST")
+            implementation = ""
+            if st_elem is not None and st_elem.text:
+                implementation = st_elem.text
+
+        # Find implementation location
+        implementation_location = None
+        if xml_text and implementation:
+            implementation_location = self._find_cdata_content_start(
+                xml_text, accessor_search_start, ["Implementation", "ST"]
+            )
+
+        return MethodContent(
+            name=accessor_name,
+            id=accessor_id,
             declaration=declaration,
             implementation=implementation,
             declaration_location=declaration_location,
