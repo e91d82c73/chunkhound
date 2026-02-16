@@ -387,8 +387,9 @@ class TwinCATParser:
 
         # Create a chunk for each variable name
         for var_name in var_names:
+            fqn = self._build_fqn(content.name, var_name, method_name, action_name)
             chunk = Chunk(
-                symbol=var_name,
+                symbol=fqn,
                 start_line=LineNumber(adjusted_line),
                 end_line=LineNumber(adjusted_line),
                 code=code,
@@ -545,7 +546,7 @@ class TwinCATParser:
 
         # Create the main ACTION chunk
         chunk = Chunk(
-            symbol=action.name,
+            symbol=f"{content.name}.{action.name}",
             start_line=LineNumber(start_line),
             end_line=LineNumber(end_line),
             code=action_code,
@@ -632,7 +633,7 @@ class TwinCATParser:
 
         # Create the main METHOD chunk
         chunk = Chunk(
-            symbol=method.name,
+            symbol=f"{content.name}.{method.name}",
             start_line=LineNumber(start_line),
             end_line=LineNumber(end_line),
             code=method_code,
@@ -720,7 +721,7 @@ class TwinCATParser:
 
         # Create the main PROPERTY chunk
         chunk = Chunk(
-            symbol=prop.name,
+            symbol=f"{content.name}.{prop.name}",
             start_line=LineNumber(start_line),
             end_line=LineNumber(end_line),
             code=property_code,
@@ -748,6 +749,23 @@ class TwinCATParser:
         if location is None:
             return line
         return line + (location.line - 1)
+
+    @staticmethod
+    def _build_fqn(
+        pou_name: str,
+        element_name: str,
+        method_name: str | None = None,
+        action_name: str | None = None,
+    ) -> str:
+        """Build a fully qualified name for a chunk symbol.
+
+        FQN hierarchy: POUName[.MethodName|.ActionName].ElementName
+        """
+        if method_name:
+            return f"{pou_name}.{method_name}.{element_name}"
+        elif action_name:
+            return f"{pou_name}.{action_name}.{element_name}"
+        return f"{pou_name}.{element_name}"
 
     def _find_nodes(self, tree: Tree, rule_name: str) -> list[Tree]:
         """Recursively find all nodes with given rule name."""
@@ -905,8 +923,10 @@ class TwinCATParser:
         # Determine kind from statement type
         kind = self._STATEMENT_KIND_MAP.get(node.data, "block")
 
-        # Generate symbol name based on statement type and line
-        symbol = f"{kind}_{adjusted_start}"
+        # Build FQN: POUName[.MethodName|.ActionName].{kind}_{line}
+        symbol = self._build_fqn(
+            pou_name, f"{kind}_{adjusted_start}", method_name, action_name
+        )
 
         # Build metadata
         metadata: dict[str, Any] = {
