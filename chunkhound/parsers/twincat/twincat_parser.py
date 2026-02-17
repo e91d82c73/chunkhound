@@ -7,6 +7,7 @@ Architecture: Custom Orchestration (like Svelte/Vue)
 - Adjusts line numbers from CDATA-relative to XML-absolute
 """
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,12 @@ from chunkhound.parsers.twincat.xml_extractor import (
     TcPOUExtractor,
 )
 from chunkhound.parsers.universal_parser import CASTConfig
+
+# Regex patterns for comment extraction
+# Block comments: (* ... *)
+BLOCK_COMMENT_RE = re.compile(r"\(\*[\s\S]*?\*\)")
+# Line comments: // ...
+LINE_COMMENT_RE = re.compile(r"//[^\n]*")
 
 # Map VAR block keywords to semantic variable classes
 VAR_BLOCK_MAP = {
@@ -148,21 +155,53 @@ class TwinCATParser:
             )
             chunks.extend(block_chunks)
 
-        # 4. Parse actions → create action chunks
+        # 4. Extract comments from declaration and implementation
+        decl_base_line = (
+            content.declaration_location.line if content.declaration_location else 1
+        )
+        impl_base_line = (
+            content.implementation_location.line
+            if content.implementation_location
+            else decl_base_line
+        )
+
+        if content.declaration and content.declaration.strip():
+            comment_chunks = self._extract_comment_chunks(
+                content.declaration,
+                file_path,
+                file_id,
+                content.name,
+                content.pou_type.upper(),
+                decl_base_line,
+            )
+            chunks.extend(comment_chunks)
+
+        if content.implementation and content.implementation.strip():
+            comment_chunks = self._extract_comment_chunks(
+                content.implementation,
+                file_path,
+                file_id,
+                content.name,
+                content.pou_type.upper(),
+                impl_base_line,
+            )
+            chunks.extend(comment_chunks)
+
+        # 5. Parse actions → create action chunks
         for action in content.actions:
             action_chunks = self._extract_action_chunks(
                 action, content, file_path, file_id
             )
             chunks.extend(action_chunks)
 
-        # 5. Parse methods → create method chunks
+        # 6. Parse methods → create method chunks
         for method in content.methods:
             method_chunks = self._extract_method_chunks(
                 method, content, file_path, file_id
             )
             chunks.extend(method_chunks)
 
-        # 6. Parse properties → create property chunks
+        # 7. Parse properties → create property chunks
         for prop in content.properties:
             property_chunks = self._extract_property_chunks(
                 prop, content, file_path, file_id
@@ -594,6 +633,41 @@ class TwinCATParser:
             )
             chunks.extend(block_chunks)
 
+        # Extract comments from action declaration and implementation
+        if action.declaration and action.declaration.strip():
+            decl_base = (
+                action.declaration_location.line
+                if action.declaration_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_chunks(
+                action.declaration,
+                file_path,
+                file_id,
+                content.name,
+                content.pou_type.upper(),
+                decl_base,
+                action_name=action.name,
+            )
+            chunks.extend(comment_chunks)
+
+        if action.implementation and action.implementation.strip():
+            impl_base = (
+                action.implementation_location.line
+                if action.implementation_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_chunks(
+                action.implementation,
+                file_path,
+                file_id,
+                content.name,
+                content.pou_type.upper(),
+                impl_base,
+                action_name=action.name,
+            )
+            chunks.extend(comment_chunks)
+
         return chunks
 
     def _extract_method_chunks(
@@ -680,6 +754,41 @@ class TwinCATParser:
                 method_name=method.name,
             )
             chunks.extend(block_chunks)
+
+        # Extract comments from method declaration and implementation
+        if method.declaration and method.declaration.strip():
+            decl_base = (
+                method.declaration_location.line
+                if method.declaration_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_chunks(
+                method.declaration,
+                file_path,
+                file_id,
+                content.name,
+                content.pou_type.upper(),
+                decl_base,
+                method_name=method.name,
+            )
+            chunks.extend(comment_chunks)
+
+        if method.implementation and method.implementation.strip():
+            impl_base = (
+                method.implementation_location.line
+                if method.implementation_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_chunks(
+                method.implementation,
+                file_path,
+                file_id,
+                content.name,
+                content.pou_type.upper(),
+                impl_base,
+                method_name=method.name,
+            )
+            chunks.extend(comment_chunks)
 
         return chunks
 
@@ -971,3 +1080,151 @@ class TwinCATParser:
         end_idx = min(len(lines), end_line)
 
         return "\n".join(lines[start_idx:end_idx])
+
+    # =========================================================================
+    # Comment Extraction (Tier 5 - Comments as Searchable Chunks)
+    # =========================================================================
+
+    def _extract_comment_chunks(
+        self,
+        source: str,
+        file_path: Path | None,
+        file_id: FileId | None,
+        pou_name: str,
+        pou_type: str,
+        base_line: int,
+        method_name: str | None = None,
+        action_name: str | None = None,
+    ) -> list[Chunk]:
+        """Extract comment chunks from ST source code.
+
+        Uses regex to find block comments (* *) and line comments (//)
+        since Lark ignores them during parsing.
+
+        Args:
+            source: ST source code to scan for comments
+            file_path: Path to source file
+            file_id: Database file ID
+            pou_name: Parent POU name
+            pou_type: POU type (FUNCTION, FUNCTION_BLOCK, PROGRAM)
+            base_line: Line offset for XML-absolute positioning
+            method_name: If extracting from method body, the method name
+            action_name: If extracting from action body, the action name
+
+        Returns:
+            List of COMMENT chunks
+        """
+        chunks: list[Chunk] = []
+
+        # Block comments: (* ... *)
+        for match in BLOCK_COMMENT_RE.finditer(source):
+            line = source[: match.start()].count("\n") + base_line
+            chunk = self._create_comment_chunk(
+                content=match.group(),
+                line=line,
+                file_path=file_path,
+                file_id=file_id,
+                pou_name=pou_name,
+                pou_type=pou_type,
+                comment_type="block",
+                method_name=method_name,
+                action_name=action_name,
+            )
+            chunks.append(chunk)
+
+        # Line comments: // ...
+        for match in LINE_COMMENT_RE.finditer(source):
+            line = source[: match.start()].count("\n") + base_line
+            chunk = self._create_comment_chunk(
+                content=match.group(),
+                line=line,
+                file_path=file_path,
+                file_id=file_id,
+                pou_name=pou_name,
+                pou_type=pou_type,
+                comment_type="line",
+                method_name=method_name,
+                action_name=action_name,
+            )
+            chunks.append(chunk)
+
+        return chunks
+
+    def _create_comment_chunk(
+        self,
+        content: str,
+        line: int,
+        file_path: Path | None,
+        file_id: FileId | None,
+        pou_name: str,
+        pou_type: str,
+        comment_type: str,
+        method_name: str | None = None,
+        action_name: str | None = None,
+    ) -> Chunk:
+        """Create a comment chunk.
+
+        Args:
+            content: Raw comment text including markers
+            line: XML-absolute line number
+            file_path: Path to source file
+            file_id: Database file ID
+            pou_name: Parent POU name
+            pou_type: POU type (FUNCTION, FUNCTION_BLOCK, PROGRAM)
+            comment_type: "block" or "line"
+            method_name: If in method context, the method name
+            action_name: If in action context, the action name
+
+        Returns:
+            COMMENT chunk
+        """
+        # Build FQN: POUName[.MethodName|.ActionName].comment_line_N
+        element_name = f"comment_line_{line}"
+        fqn = self._build_fqn(pou_name, element_name, method_name, action_name)
+
+        # Calculate end line for multi-line block comments
+        end_line = line + content.count("\n")
+
+        # Clean comment text (strip markers)
+        cleaned_text = self._clean_st_comment(content)
+
+        # Build metadata
+        metadata: dict[str, Any] = {
+            "kind": "comment",
+            "comment_type": comment_type,
+            "pou_name": pou_name,
+            "pou_type": pou_type,
+            "cleaned_text": cleaned_text,
+        }
+        if method_name:
+            metadata["method_name"] = method_name
+        if action_name:
+            metadata["action_name"] = action_name
+
+        return Chunk(
+            symbol=fqn,
+            start_line=LineNumber(line),
+            end_line=LineNumber(end_line),
+            code=content,
+            chunk_type=ChunkType.COMMENT,
+            file_id=file_id or FileId(0),
+            language=Language.TWINCAT,
+            file_path=FilePath(str(file_path)) if file_path else None,
+            metadata=metadata,
+        )
+
+    def _clean_st_comment(self, text: str) -> str:
+        """Strip ST comment markers (* *) and //.
+
+        Args:
+            text: Raw comment text with markers
+
+        Returns:
+            Cleaned comment text without markers
+        """
+        cleaned = text.strip()
+        if cleaned.startswith("(*") and cleaned.endswith("*)"):
+            cleaned = cleaned[2:-2].strip()
+        elif cleaned.startswith("//"):
+            cleaned = cleaned[2:].strip()
+        return cleaned
