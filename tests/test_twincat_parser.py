@@ -3664,3 +3664,180 @@ END_VAR
         assert len(property_chunks) == 1
         assert property_chunks[0].metadata["has_get"] is False
         assert property_chunks[0].metadata["has_set"] is True
+
+
+# =============================================================================
+# TestChunkNameInSourceCode
+# =============================================================================
+
+
+class TestChunkNameInSourceCode:
+    """Test that chunk names appear in their source code at start_line."""
+
+    def test_comprehensive_chunk_names_in_start_line(
+        self, twincat_parser, comprehensive_fixture
+    ):
+        """Verify each chunk's name appears in the code at its start_line.
+
+        For every chunk, extract the final segment of the symbol (after the last '.'),
+        and verify it exists in the line of code at start_line.
+
+        For FIELD (variable) chunks, checks the first two lines to handle pragma
+        attributes (e.g., {attribute 'hide'}) that precede the variable declaration.
+
+        Excludes:
+        - BLOCK chunks: have synthetic names (if_block_XXX, for_loop_XXX)
+        - POU chunks (FUNCTION_BLOCK, PROGRAM, FUNCTION): start_line points to
+          CDATA section start, not the declaration line
+        """
+        # Parse the comprehensive fixture
+        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+
+        # Read the source file to get individual lines
+        content = comprehensive_fixture.read_text()
+        lines = content.splitlines()
+
+        # Chunk types to skip (synthetic names or special line handling)
+        skip_types = {
+            ChunkType.BLOCK,          # Synthetic names like if_block_295
+            ChunkType.COMMENT,        # Synthetic names like comment_line_4
+            ChunkType.FUNCTION_BLOCK, # start_line = CDATA start
+            ChunkType.PROGRAM,        # start_line = CDATA start
+            ChunkType.FUNCTION,       # start_line = CDATA start
+        }
+
+        for chunk in chunks:
+            # Skip chunk types with synthetic names or special line handling
+            if chunk.chunk_type in skip_types:
+                continue
+
+            # Extract the name (last segment after the final '.')
+            name = chunk.symbol.rpartition('.')[2]
+
+            # Get lines at start_line and start_line+1 (1-based indexing)
+            line_index = chunk.start_line - 1
+            assert 0 <= line_index < len(lines), (
+                f"Chunk {chunk.symbol} has start_line {chunk.start_line} "
+                f"which is out of range (file has {len(lines)} lines)"
+            )
+
+            line1 = lines[line_index]
+            line2 = lines[line_index + 1] if line_index + 1 < len(lines) else ""
+
+            # For variables (FIELD), check first two lines to cover pragma attributes
+            if chunk.chunk_type == ChunkType.FIELD:
+                assert name in line1 or name in line2, (
+                    f"Variable name '{name}' (from symbol '{chunk.symbol}') "
+                    f"not found in lines {chunk.start_line}-{chunk.start_line + 1}:\n"
+                    f"  Line {chunk.start_line}: '{line1}'\n"
+                    f"  Line {chunk.start_line + 1}: '{line2}'"
+                )
+            else:
+                # For non-variable chunks, keep single-line check
+                assert name in line1, (
+                    f"Chunk name '{name}' (from symbol '{chunk.symbol}') "
+                    f"not found in line {chunk.start_line}: '{line1}'"
+                )
+
+
+# =============================================================================
+# TestCommentExtraction
+# =============================================================================
+
+
+class TestCommentExtraction:
+    """Test comment chunk extraction from Structured Text code."""
+
+    @pytest.fixture
+    def comment_fixture(self):
+        """Load the comment test fixture."""
+        fixture_path = (
+            Path(__file__).parent / "fixtures" / "twincat" / "example_with_comments.TcPOU"
+        )
+        if not fixture_path.exists():
+            pytest.skip("Comment fixture not found")
+        return fixture_path
+
+    def test_comment_chunks_extracted(self, twincat_parser, comment_fixture):
+        """Test that comment chunks are extracted from the fixture."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
+        assert len(comment_chunks) > 0, "Expected at least one comment chunk"
+
+    def test_block_comment_type(self, twincat_parser, comment_fixture):
+        """Test that block comments have comment_type='block' in metadata."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        block_comments = find_by_metadata(chunks, "comment_type", "block")
+        assert len(block_comments) > 0, "Expected at least one block comment"
+        for chunk in block_comments:
+            assert "(*" in chunk.code and "*)" in chunk.code
+
+    def test_line_comment_type(self, twincat_parser, comment_fixture):
+        """Test that line comments have comment_type='line' in metadata."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        line_comments = find_by_metadata(chunks, "comment_type", "line")
+        assert len(line_comments) > 0, "Expected at least one line comment"
+        for chunk in line_comments:
+            assert chunk.code.startswith("//")
+
+    def test_comment_fqn_format(self, twincat_parser, comment_fixture):
+        """Test that comment FQNs follow pattern: POUName.comment_line_N."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
+        for chunk in comment_chunks:
+            assert ".comment_line_" in chunk.symbol
+            assert chunk.symbol.startswith("FB_CommentExample.")
+
+    def test_comment_has_cleaned_text(self, twincat_parser, comment_fixture):
+        """Test that comment metadata includes cleaned_text without markers."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
+        for chunk in comment_chunks:
+            assert "cleaned_text" in chunk.metadata
+            cleaned = chunk.metadata["cleaned_text"]
+            # Cleaned text should not have markers
+            assert not cleaned.startswith("(*")
+            assert not cleaned.startswith("//")
+
+    def test_comment_metadata_fields(self, twincat_parser, comment_fixture):
+        """Test that comment chunks have required metadata fields."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
+        for chunk in comment_chunks:
+            assert chunk.metadata.get("kind") == "comment"
+            assert "comment_type" in chunk.metadata
+            assert "pou_name" in chunk.metadata
+            assert "pou_type" in chunk.metadata
+            assert "cleaned_text" in chunk.metadata
+
+    def test_multiline_block_comment(self, twincat_parser, comment_fixture):
+        """Test that multi-line block comments have correct end_line."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        block_comments = find_by_metadata(chunks, "comment_type", "block")
+        # At least one multiline block comment should exist
+        multiline = [c for c in block_comments if c.end_line > c.start_line]
+        assert len(multiline) > 0, "Expected at least one multi-line block comment"
+
+    def test_comment_language_is_twincat(self, twincat_parser, comment_fixture):
+        """Test that all comment chunks have Language.TWINCAT."""
+        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
+        for chunk in comment_chunks:
+            assert chunk.language == Language.TWINCAT
+
+    def test_comprehensive_fixture_has_comments(self, twincat_parser, comprehensive_fixture):
+        """Test that the comprehensive fixture also extracts comments."""
+        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        assert_no_parse_errors(twincat_parser)
+        comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
+        # Comprehensive fixture has comments
+        assert len(comment_chunks) > 0, "Expected comments in comprehensive fixture"
