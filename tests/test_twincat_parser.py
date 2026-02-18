@@ -2,29 +2,57 @@
 
 Tests the TwinCAT parser (`chunkhound/parsers/twincat/`) which handles
 TcPOU XML files containing IEC 61131-3 Structured Text code.
+
+These tests use the UniversalChunk API (extract_universal_chunks) which
+produces language-agnostic chunks suitable for the universal parser pipeline.
 """
 
 from pathlib import Path
 
 import pytest
 
-from chunkhound.core.types.common import ChunkType, FileId, Language
+from chunkhound.core.types.common import ChunkType, Language
 from chunkhound.parsers.parser_factory import ParserFactory
 from chunkhound.parsers.twincat.twincat_parser import TwinCATParser
+from chunkhound.parsers.universal_engine import UniversalChunk, UniversalConcept
 
 # =============================================================================
 # Test Helpers
 # =============================================================================
 
+# Mapping from ChunkType to (UniversalConcept, metadata["kind"]) for filtering
+_CHUNK_TYPE_MAPPING = {
+    ChunkType.PROGRAM: (UniversalConcept.DEFINITION, "program"),
+    ChunkType.FUNCTION_BLOCK: (UniversalConcept.DEFINITION, "function_block"),
+    ChunkType.FUNCTION: (UniversalConcept.DEFINITION, "function"),
+    ChunkType.METHOD: (UniversalConcept.DEFINITION, "method"),
+    ChunkType.ACTION: (UniversalConcept.DEFINITION, "action"),
+    ChunkType.PROPERTY: (UniversalConcept.DEFINITION, "property"),
+    ChunkType.FIELD: (UniversalConcept.DEFINITION, "field"),
+    ChunkType.VARIABLE: (UniversalConcept.DEFINITION, "variable"),
+    ChunkType.BLOCK: (UniversalConcept.BLOCK, None),  # kind varies
+    ChunkType.COMMENT: (UniversalConcept.COMMENT, "comment"),
+}
+
 
 def find_by_symbol(chunks, symbol):
-    """Filter chunks by symbol name."""
-    return [c for c in chunks if c.symbol == symbol]
+    """Filter chunks by symbol/name."""
+    return [c for c in chunks if c.name == symbol]
 
 
 def find_by_type(chunks, chunk_type):
-    """Filter chunks by ChunkType."""
-    return [c for c in chunks if c.chunk_type == chunk_type]
+    """Filter chunks by ChunkType via metadata['kind'] or concept.
+
+    Maps ChunkType to the equivalent UniversalConcept + metadata['kind'].
+    """
+    mapping = _CHUNK_TYPE_MAPPING.get(chunk_type)
+    if mapping is None:
+        return []
+    concept, kind = mapping
+    if kind is None:
+        # For BLOCK, just filter by concept
+        return [c for c in chunks if c.concept == concept]
+    return [c for c in chunks if c.concept == concept and c.metadata.get("kind") == kind]
 
 
 def find_by_metadata(chunks, key, value):
@@ -37,6 +65,11 @@ def assert_no_parse_errors(parser: TwinCATParser) -> None:
     assert parser.parse_errors == [], (
         f"Parser encountered errors: {parser.parse_errors}"
     )
+
+
+def extract_chunks_from_file(parser: TwinCATParser, file_path: Path) -> list[UniversalChunk]:
+    """Extract UniversalChunks from a TcPOU file."""
+    return parser.extract_universal_chunks(file_path.read_text(), file_path)
 
 
 # =============================================================================
@@ -120,16 +153,16 @@ class TestPOUTypes:
     # --- PROGRAM Tests ---
 
     def test_program_chunk_type(self, twincat_parser, program_fixture):
-        """Test PROGRAM creates ChunkType.PROGRAM chunk."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        """Test PROGRAM creates chunk with kind='program'."""
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
         program_chunks = find_by_type(chunks, ChunkType.PROGRAM)
         assert len(program_chunks) == 1
-        assert program_chunks[0].symbol == "PRG_Example"
+        assert program_chunks[0].name == "PRG_Example"
 
     def test_program_metadata(self, twincat_parser, program_fixture):
         """Test PROGRAM metadata includes kind='program', pou_type='PROGRAM'."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
         program_chunks = find_by_type(chunks, ChunkType.PROGRAM)
         assert len(program_chunks) == 1
@@ -141,40 +174,40 @@ class TestPOUTypes:
 
     def test_program_variables(self, twincat_parser, program_fixture):
         """Test PROGRAM extracts VAR_INPUT, VAR_OUTPUT, and VAR blocks."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # VAR_INPUT: bStart
         input_vars = find_by_metadata(chunks, "var_class", "input")
         assert len(input_vars) == 1
-        assert input_vars[0].symbol == "PRG_Example.bStart"
+        assert input_vars[0].name == "PRG_Example.bStart"
         assert input_vars[0].metadata["data_type"] == "BOOL"
 
         # VAR_OUTPUT: bRunning
         output_vars = find_by_metadata(chunks, "var_class", "output")
         assert len(output_vars) == 1
-        assert output_vars[0].symbol == "PRG_Example.bRunning"
+        assert output_vars[0].name == "PRG_Example.bRunning"
         assert output_vars[0].metadata["data_type"] == "BOOL"
 
         # VAR (local): nCycleCount
         local_vars = find_by_metadata(chunks, "var_class", "local")
         assert len(local_vars) == 1
-        assert local_vars[0].symbol == "PRG_Example.nCycleCount"
+        assert local_vars[0].name == "PRG_Example.nCycleCount"
         assert local_vars[0].metadata["data_type"] == "DINT"
 
     # --- FUNCTION Tests ---
 
     def test_function_chunk_type(self, twincat_parser, function_fixture):
-        """Test FUNCTION creates ChunkType.FUNCTION chunk."""
-        chunks = twincat_parser.parse_file(function_fixture, FileId(1))
+        """Test FUNCTION creates chunk with kind='function'."""
+        chunks = extract_chunks_from_file(twincat_parser,function_fixture)
         assert_no_parse_errors(twincat_parser)
         function_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(function_chunks) == 1
-        assert function_chunks[0].symbol == "FC_Add"
+        assert function_chunks[0].name == "FC_Add"
 
     def test_function_metadata(self, twincat_parser, function_fixture):
         """Test FUNCTION metadata includes kind='function', pou_type='FUNCTION'."""
-        chunks = twincat_parser.parse_file(function_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_fixture)
         assert_no_parse_errors(twincat_parser)
         function_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(function_chunks) == 1
@@ -186,13 +219,13 @@ class TestPOUTypes:
 
     def test_function_variables(self, twincat_parser, function_fixture):
         """Test FUNCTION extracts VAR_INPUT and VAR blocks."""
-        chunks = twincat_parser.parse_file(function_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # VAR_INPUT: nA, nB
         input_vars = find_by_metadata(chunks, "var_class", "input")
         assert len(input_vars) == 2
-        input_names = {c.symbol for c in input_vars}
+        input_names = {c.name for c in input_vars}
         assert input_names == {"FC_Add.nA", "FC_Add.nB"}
         for var in input_vars:
             assert var.metadata["data_type"] == "DINT"
@@ -200,7 +233,7 @@ class TestPOUTypes:
         # VAR (local): nResult
         local_vars = find_by_metadata(chunks, "var_class", "local")
         assert len(local_vars) == 1
-        assert local_vars[0].symbol == "FC_Add.nResult"
+        assert local_vars[0].name == "FC_Add.nResult"
         assert local_vars[0].metadata["data_type"] == "DINT"
 
 
@@ -213,7 +246,7 @@ class TestPOUChunkCreation:
     """Test POU (Program Organization Unit) chunk creation."""
 
     def test_function_block_chunk(self, twincat_parser):
-        """Test FUNCTION_BLOCK creates correct ChunkType."""
+        """Test FUNCTION_BLOCK creates chunk with kind='function_block'."""
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{12345678-1234-1234-1234-123456789abc}" SpecialFunc="None">
@@ -227,11 +260,11 @@ END_VAR
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
         assert len(pou_chunks) == 1
-        assert pou_chunks[0].symbol == "FB_Test"
+        assert pou_chunks[0].name == "FB_Test"
 
     def test_pou_metadata(self, twincat_parser):
         """Test POU metadata includes pou_type, pou_name, pou_id, kind."""
@@ -246,7 +279,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
         assert len(pou_chunks) == 1
@@ -278,11 +311,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.bEnable")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.FIELD
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "field"
         assert var_chunks[0].metadata["var_class"] == "input"
 
     def test_var_output_is_field(self, twincat_parser):
@@ -298,11 +332,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.bDone")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.FIELD
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "field"
         assert var_chunks[0].metadata["var_class"] == "output"
 
     def test_var_in_out_is_field(self, twincat_parser):
@@ -318,11 +353,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.refData")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.FIELD
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "field"
         assert var_chunks[0].metadata["var_class"] == "in_out"
 
     def test_var_local_is_field(self, twincat_parser):
@@ -338,11 +374,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.nLocal")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.FIELD
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "field"
         assert var_chunks[0].metadata["var_class"] == "local"
 
     def test_var_stat_is_field(self, twincat_parser):
@@ -358,11 +395,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.nCounter")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.FIELD
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "field"
         assert var_chunks[0].metadata["var_class"] == "static"
 
     def test_var_temp_is_field(self, twincat_parser):
@@ -378,11 +416,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.nTemp")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.FIELD
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "field"
         assert var_chunks[0].metadata["var_class"] == "temp"
 
     def test_var_global_is_variable(self, twincat_parser):
@@ -398,11 +437,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.gValue")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.VARIABLE
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "variable"
         assert var_chunks[0].metadata["var_class"] == "global"
 
     def test_var_external_is_variable(self, twincat_parser):
@@ -418,11 +458,12 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_symbol(chunks, "FB_Test.extValue")
         assert len(var_chunks) == 1
-        assert var_chunks[0].chunk_type == ChunkType.VARIABLE
+        assert var_chunks[0].concept == UniversalConcept.DEFINITION
+        assert var_chunks[0].metadata["kind"] == "variable"
         assert var_chunks[0].metadata["var_class"] == "external"
 
 
@@ -450,7 +491,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         bool_chunk = find_by_symbol(chunks, "FB_Test.bFlag")[0]
@@ -479,7 +520,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         string_chunk = find_by_symbol(chunks, "FB_Test.sName")[0]
@@ -501,7 +542,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         array_chunk = find_by_symbol(chunks, "FB_Test.anData")[0]
         assert "ARRAY[0..9] OF INT" in array_chunk.metadata["data_type"]
@@ -519,7 +560,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         array_chunk = find_by_symbol(chunks, "FB_Test.afMatrix")[0]
         data_type = array_chunk.metadata["data_type"]
@@ -540,7 +581,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         ptr_chunk = find_by_symbol(chunks, "FB_Test.pnValue")[0]
         assert "POINTER TO" in ptr_chunk.metadata["data_type"]
@@ -559,7 +600,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         ref_chunk = find_by_symbol(chunks, "FB_Test.refValue")[0]
         assert "REFERENCE TO" in ref_chunk.metadata["data_type"]
@@ -580,7 +621,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         struct_chunk = find_by_symbol(chunks, "FB_Test.stData")[0]
@@ -605,7 +646,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         array_chunk = find_by_symbol(chunks, "FB_Test.anNestedArray")[0]
         data_type = array_chunk.metadata["data_type"]
@@ -635,7 +676,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.nRetained")[0]
         assert var_chunk.metadata["retain"] is True
@@ -655,7 +696,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.nPersistent")[0]
         assert var_chunk.metadata["persistent"] is True
@@ -675,7 +716,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.stSaved")[0]
         assert var_chunk.metadata["retain"] is True
@@ -704,7 +745,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.MAX_SIZE")[0]
         assert var_chunk.metadata["constant"] is True
@@ -724,7 +765,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.nValue")[0]
         assert var_chunk.metadata["constant"] is False
@@ -742,10 +783,11 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.G_MAX_SIZE")[0]
-        assert var_chunk.chunk_type == ChunkType.VARIABLE  # GLOBAL → VARIABLE
+        assert var_chunk.concept == UniversalConcept.DEFINITION
+        assert var_chunk.metadata["kind"] == "variable"  # GLOBAL → VARIABLE
         assert var_chunk.metadata["var_class"] == "global"
         assert var_chunk.metadata["constant"] is True
 
@@ -771,7 +813,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.bDigitalInput")[0]
         assert var_chunk.metadata["hw_address"] == "%I*"
@@ -789,7 +831,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.nAnalogInput")[0]
         assert var_chunk.metadata["hw_address"] == "%IW100"
@@ -808,7 +850,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         digital_chunk = find_by_symbol(chunks, "FB_Test.bDigitalOutput")[0]
@@ -831,7 +873,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         word_chunk = find_by_symbol(chunks, "FB_Test.nMemoryWord")[0]
@@ -862,16 +904,17 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
-        flag_chunks = [c for c in chunks if c.symbol in ("FB_Test.bFlag1", "FB_Test.bFlag2", "FB_Test.bFlag3")]
+        flag_chunks = [c for c in chunks if c.name in ("FB_Test.bFlag1", "FB_Test.bFlag2", "FB_Test.bFlag3")]
         assert len(flag_chunks) == 3
 
         # All should have BOOL data type
         for chunk in flag_chunks:
             assert chunk.metadata["data_type"] == "BOOL"
-            assert chunk.chunk_type == ChunkType.FIELD
+            assert chunk.concept == UniversalConcept.DEFINITION
+            assert chunk.metadata["kind"] == "field"
 
 
 # =============================================================================
@@ -902,11 +945,11 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
         assert len(action_chunks) == 1
-        assert action_chunks[0].symbol == "FB_Test.ProcessData"
+        assert action_chunks[0].name == "FB_Test.ProcessData"
 
     def test_action_metadata(self, twincat_parser):
         """Test action metadata includes kind='action', pou_name, action_id."""
@@ -925,7 +968,7 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
         assert len(action_chunks) == 1
@@ -955,7 +998,7 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_var_chunks = find_by_metadata(chunks, "action_name", "ProcessData")
         assert len(action_var_chunks) == 2
@@ -983,10 +1026,11 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_var = find_by_symbol(chunks, "FB_Test.TestAction.nActionLocal")[0]
-        assert action_var.chunk_type == ChunkType.FIELD
+        assert action_var.concept == UniversalConcept.DEFINITION
+        assert action_var.metadata["kind"] == "field"
         assert action_var.metadata["var_class"] == "local"
 
     def test_multiple_actions(self, twincat_parser):
@@ -1010,12 +1054,12 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
         assert len(action_chunks) == 2
 
-        action_names = {c.symbol for c in action_chunks}
+        action_names = {c.name for c in action_chunks}
         assert action_names == {"FB_Test.ActionOne", "FB_Test.ActionTwo"}
 
 
@@ -1029,21 +1073,21 @@ class TestComprehensiveFixture:
 
     def test_fixture_parses_without_errors(self, twincat_parser, comprehensive_fixture):
         """Test fixture parses without parse_errors."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert len(chunks) > 0
         assert len(twincat_parser.parse_errors) == 0
 
     def test_fixture_main_pou(self, twincat_parser, comprehensive_fixture):
         """Test fixture has FB_ComprehensiveExample FUNCTION_BLOCK chunk."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
         assert len(pou_chunks) == 1
-        assert pou_chunks[0].symbol == "FB_ComprehensiveExample"
+        assert pou_chunks[0].name == "FB_ComprehensiveExample"
 
     def test_fixture_var_input_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts all VAR_INPUT variables."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         input_vars = find_by_metadata(chunks, "var_class", "input")
         # Fixture has: bEnable, nInputValue, fSetpoint, sCommand, anInputArray, afMatrix
@@ -1051,7 +1095,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_output_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts all VAR_OUTPUT variables."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         output_vars = find_by_metadata(chunks, "var_class", "output")
         # From fixture: bDone, bError, nErrorCode, sStatus, anResults
@@ -1059,7 +1103,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_in_out_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts both VAR_IN_OUT variables."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         in_out_vars = find_by_metadata(chunks, "var_class", "in_out")
         # From fixture: refCounter, aBuffer
@@ -1067,7 +1111,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_stat_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts VAR_STAT variables with var_class='static'."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         static_vars = find_by_metadata(chunks, "var_class", "static")
         # From fixture: nCallCount, fAccumulator
@@ -1075,7 +1119,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_temp_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts VAR_TEMP variables with var_class='temp'."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         temp_vars = find_by_metadata(chunks, "var_class", "temp")
         # From fixture: nTempValue, fTempResult
@@ -1083,7 +1127,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_retain_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts RETAIN variables with retain=True."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         retain_vars = find_by_metadata(chunks, "retain", True)
         # From fixture: nRetainedCounter, bRetainedFlag, stSavedState
@@ -1091,7 +1135,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_persistent_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts PERSISTENT variables with persistent=True."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         persistent_vars = find_by_metadata(chunks, "persistent", True)
         # From fixture: nPersistentValue, stSavedState
@@ -1099,7 +1143,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_hardware_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts AT directive variables with hw_address."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         hw_vars = [
             c for c in chunks
@@ -1111,17 +1155,17 @@ class TestComprehensiveFixture:
 
     def test_fixture_actions(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts ProcessData and ResetState ACTION chunks."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
         assert len(action_chunks) == 2
 
-        action_names = {c.symbol for c in action_chunks}
+        action_names = {c.name for c in action_chunks}
         assert action_names == {"FB_ComprehensiveExample.ProcessData", "FB_ComprehensiveExample.ResetState"}
 
     def test_fixture_action_local_vars(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts action-scoped variables with action_name."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # ProcessData action vars: nLocalIndex, fLocalSum, bLocalFlag, anLocalBuffer
@@ -1134,7 +1178,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_constant_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts VAR CONSTANT variables with constant=True."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         constant_vars = find_by_metadata(chunks, "constant", True)
         # From fixture: c_nMaxItems, c_fPi, c_sVersion
@@ -1142,7 +1186,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_control_flow_blocks(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts BLOCK chunks for control flow in implementation."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # Fixture has: multiple IF, CASE, FOR, WHILE, REPEAT blocks
@@ -1156,14 +1200,16 @@ class TestComprehensiveFixture:
         assert "while_loop" in block_kinds
         assert "repeat_loop" in block_kinds
 
-    def test_fixture_all_chunks_have_twincat_language(
+    def test_fixture_all_chunks_have_language_node_type(
         self, twincat_parser, comprehensive_fixture
     ):
-        """Test all chunks have Language.TWINCAT set."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        """Test all chunks have language_node_type set (indicates TwinCAT/Lark origin)."""
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         for chunk in chunks:
-            assert chunk.language == Language.TWINCAT
+            # UniversalChunk is language-agnostic but tracks origin via language_node_type
+            assert chunk.language_node_type is not None
+            assert chunk.language_node_type.startswith("lark_")
 
 
 # =============================================================================
@@ -1187,7 +1233,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         pou_chunk = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)[0]
 
@@ -1208,7 +1254,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         var_chunk = find_by_symbol(chunks, "FB_Test.nValue")[0]
 
@@ -1236,7 +1282,7 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunk = find_by_type(chunks, ChunkType.ACTION)[0]
 
@@ -1260,7 +1306,7 @@ class TestTwinCATLineNumbers:
 
     def test_pou_chunk_has_absolute_start_line(self, twincat_parser, program_fixture):
         """Test POU chunk start_line equals CDATA start position (line 4)."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.PROGRAM)
         assert len(pou_chunks) == 1
@@ -1269,7 +1315,7 @@ class TestTwinCATLineNumbers:
 
     def test_pou_chunk_end_line_spans_content(self, twincat_parser, program_fixture):
         """Test POU end_line includes implementation (through line 20)."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.PROGRAM)
         assert len(pou_chunks) == 1
@@ -1281,7 +1327,7 @@ class TestTwinCATLineNumbers:
         self, twincat_parser, program_fixture
     ):
         """Test that variable line numbers are > 3 (not CDATA-relative starting at 1)."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_type(chunks, ChunkType.FIELD)
         assert len(var_chunks) >= 3  # bStart, bRunning, nCycleCount
@@ -1289,7 +1335,7 @@ class TestTwinCATLineNumbers:
         for chunk in var_chunks:
             # CDATA-relative would start at 1; absolute must be > 3
             assert chunk.start_line > 3, (
-                f"Variable {chunk.symbol} has line {chunk.start_line}, "
+                f"Variable {chunk.name} has line {chunk.start_line}, "
                 "which appears to be CDATA-relative, not XML-absolute"
             )
 
@@ -1297,7 +1343,7 @@ class TestTwinCATLineNumbers:
         self, twincat_parser, program_fixture
     ):
         """Test specific variable line numbers: bStart=6, bRunning=9, nCycleCount=12."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # bStart is on line 6
@@ -1317,7 +1363,7 @@ class TestTwinCATLineNumbers:
 
     def test_line_numbers_are_not_cdata_relative(self, twincat_parser, program_fixture):
         """Verify line numbers are > 3 (XML-absolute, not CDATA-relative starting at 1)."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
 
         for chunk in chunks:
@@ -1327,11 +1373,11 @@ class TestTwinCATLineNumbers:
             # - Line 3: POU element
             # - Line 4+: actual content in CDATA
             assert chunk.start_line > 3, (
-                f"Chunk {chunk.symbol} has start_line={chunk.start_line}, "
+                f"Chunk {chunk.name} has start_line={chunk.start_line}, "
                 "which suggests CDATA-relative numbering"
             )
             assert chunk.end_line >= chunk.start_line, (
-                f"Chunk {chunk.symbol} has invalid end_line={chunk.end_line} "
+                f"Chunk {chunk.name} has invalid end_line={chunk.end_line} "
                 f"< start_line={chunk.start_line}"
             )
 
@@ -1357,7 +1403,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         # Should still create the POU chunk (graceful degradation)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
         assert len(pou_chunks) == 1
@@ -1385,7 +1431,7 @@ END_VAR
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         # Main POU and action should still be created
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
@@ -1409,7 +1455,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        twincat_parser.parse_content(invalid_xml)
+        twincat_parser.extract_universal_chunks(invalid_xml)
         assert len(twincat_parser.parse_errors) > 0
 
         # Second parse with valid syntax
@@ -1424,7 +1470,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        twincat_parser.parse_content(valid_xml)
+        twincat_parser.extract_universal_chunks(valid_xml)
         # parse_errors should now be empty
         assert len(twincat_parser.parse_errors) == 0
 
@@ -1492,7 +1538,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) >= 1
@@ -1501,7 +1547,7 @@ END_IF;
         assert if_blocks[0].metadata["pou_type"] == "FUNCTION"
         assert if_blocks[0].metadata["pou_name"] == "FC_Test"
         # Verify FQN symbol pattern: POUName.{kind}_{line}
-        assert if_blocks[0].symbol.startswith("FC_Test.if_block_")
+        assert if_blocks[0].name.startswith("FC_Test.if_block_")
 
     def test_function_case_block(self, twincat_parser):
         """Test that FUNCTION with CASE creates BLOCK chunk with kind='case_block'."""
@@ -1524,7 +1570,7 @@ END_CASE;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         case_blocks = find_by_metadata(block_chunks, "kind", "case_block")
@@ -1551,7 +1597,7 @@ FC_Test := sum;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         for_loops = find_by_metadata(block_chunks, "kind", "for_loop")
@@ -1577,7 +1623,7 @@ FC_Test := i;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         while_loops = find_by_metadata(block_chunks, "kind", "while_loop")
@@ -1604,7 +1650,7 @@ FC_Test := i;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         repeat_loops = find_by_metadata(block_chunks, "kind", "repeat_loop")
@@ -1612,7 +1658,7 @@ FC_Test := i;
 
     def test_function_multiple_blocks(self, twincat_parser, function_loops_fixture):
         """Test that multiple blocks are extracted from a single FUNCTION."""
-        chunks = twincat_parser.parse_file(function_loops_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # Fixture has: 1 CASE with nested (FOR, WHILE, REPEAT) = 4 total
@@ -1620,7 +1666,7 @@ FC_Test := i;
 
     def test_function_nested_blocks(self, twincat_parser, function_if_fixture):
         """Test that nested IF blocks are both extracted."""
-        chunks = twincat_parser.parse_file(function_if_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_if_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         if_blocks = find_by_metadata(block_chunks, "kind", "if_block")
@@ -1645,7 +1691,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1674,7 +1720,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1710,7 +1756,7 @@ END_IF;
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1718,17 +1764,17 @@ END_IF;
         assert block_chunks[0].metadata["action_name"] == "DoProcess"
         assert block_chunks[0].metadata["pou_name"] == "FC_Test"
         # Verify FQN symbol pattern: POUName.ActionName.{kind}_{line}
-        assert block_chunks[0].symbol.startswith("FC_Test.DoProcess.if_block_")
+        assert block_chunks[0].name.startswith("FC_Test.DoProcess.if_block_")
 
     def test_function_action_multiple_blocks(self, twincat_parser, function_action_fixture):
         """Test Action with multiple control flow blocks extracts all of them."""
-        chunks = twincat_parser.parse_file(function_action_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_action_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Get action blocks only (those with action_name in metadata)
         action_blocks = [
             c for c in chunks
-            if c.chunk_type == ChunkType.BLOCK and c.metadata.get("action_name")
+            if c.concept == UniversalConcept.BLOCK and c.metadata.get("action_name")
         ]
         # Action has: FOR (with nested IF), WHILE = 3 blocks
         assert len(action_blocks) >= 3
@@ -1755,7 +1801,7 @@ END_FOR;
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1769,7 +1815,7 @@ END_FOR;
 
     def test_program_block_extraction(self, twincat_parser, program_fixture):
         """Test that PROGRAM extracts BLOCK chunks for control flow."""
-        chunks = twincat_parser.parse_file(program_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # program_fixture contains IF/CASE/FOR/WHILE/REPEAT
@@ -1793,7 +1839,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1824,7 +1870,7 @@ END_IF;
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1861,7 +1907,7 @@ END_FOR;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 3
@@ -1890,7 +1936,7 @@ END_WHILE;
     </Action>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -1914,7 +1960,7 @@ END_VAR
     <Implementation><ST><![CDATA[]]></ST></Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 0
@@ -1936,7 +1982,7 @@ END_VAR
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 0
@@ -1960,7 +2006,7 @@ END_IF;
   </POU>
 </TcPlcObject>"""
         # Should not raise an exception
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         # Should still create the FUNCTION chunk
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2000,7 +2046,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2026,7 +2072,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2050,7 +2096,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2076,7 +2122,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2102,7 +2148,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2135,7 +2181,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2159,7 +2205,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2185,7 +2231,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2211,7 +2257,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2244,7 +2290,7 @@ FC_IntToReal := fReal;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2268,7 +2314,7 @@ FC_RealToInt := nInt;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2292,7 +2338,7 @@ FC_DintToString := 1;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2316,7 +2362,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2340,7 +2386,7 @@ FC_NestedConversions := fRounded;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2373,7 +2419,7 @@ FC_ArrayAccess := arr[0] + arr[i];
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2398,7 +2444,7 @@ FC_MultiDimArrayAccess := matrix[0, 0] + matrix[i, j];
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2422,7 +2468,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2444,7 +2490,7 @@ FC_MemberAccess := stData.nValue;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2466,7 +2512,7 @@ FC_NestedMemberAccess := stData.stNested.fValue;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2496,7 +2542,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2522,7 +2568,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2553,7 +2599,7 @@ FC_ExptPrecedence := fResult;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2575,7 +2621,7 @@ FC_ComplexArithmetic := nResult;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2601,7 +2647,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2629,7 +2675,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2651,7 +2697,7 @@ FC_ExptFunction := fResult;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2687,7 +2733,7 @@ FC_PositionalArgs := nMax + nAbs;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2711,7 +2757,7 @@ FC_NamedArgs := fbTON.Q;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2735,7 +2781,7 @@ FC_OutputArgs := bDone;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2760,7 +2806,7 @@ FC_MixedArgs := nOutput;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2783,7 +2829,7 @@ FC_MethodCall := 1;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2806,7 +2852,7 @@ FC_ChainedMethodCall := nResult;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2837,7 +2883,7 @@ FC_ExpressionStatement := 1;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2861,7 +2907,7 @@ FC_EmptyStatement := n;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2887,7 +2933,7 @@ FC_ExitInLoop := i;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2916,7 +2962,7 @@ FC_ContinueInLoop := nSum;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2941,7 +2987,7 @@ FC_ReturnStatement := n;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2966,7 +3012,7 @@ FC_ArrayAssignment := arr[5];
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -2989,7 +3035,7 @@ FC_MemberAssignment := stData.nValue;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
         assert len(func_chunks) == 1
@@ -3022,7 +3068,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         if_blocks = find_by_metadata(block_chunks, "kind", "if_block")
@@ -3052,7 +3098,7 @@ FC_ForArrayAccess := nSum;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         for_loops = find_by_metadata(block_chunks, "kind", "for_loop")
@@ -3081,7 +3127,7 @@ END_CASE;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         case_blocks = find_by_metadata(block_chunks, "kind", "case_block")
@@ -3112,7 +3158,7 @@ FC_WhileComplex := i;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         while_loops = find_by_metadata(block_chunks, "kind", "while_loop")
@@ -3182,7 +3228,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -3209,7 +3255,7 @@ END_IF;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) == 1
@@ -3222,7 +3268,7 @@ END_IF;
         self, twincat_parser, function_loops_fixture
     ):
         """Test specific FOR loop line numbers verified against known XML positions."""
-        chunks = twincat_parser.parse_file(function_loops_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         for_loops = find_by_metadata(block_chunks, "kind", "for_loop")
@@ -3237,7 +3283,7 @@ END_IF;
         self, twincat_parser, function_if_fixture
     ):
         """Test outer IF and nested IF have different, correct line numbers."""
-        chunks = twincat_parser.parse_file(function_if_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_if_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         if_blocks = find_by_metadata(block_chunks, "kind", "if_block")
@@ -3253,7 +3299,7 @@ END_IF;
 
     def test_case_block_line_numbers(self, twincat_parser, function_loops_fixture):
         """Test CASE block start/end lines are XML-absolute."""
-        chunks = twincat_parser.parse_file(function_loops_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         case_blocks = find_by_metadata(block_chunks, "kind", "case_block")
@@ -3264,7 +3310,7 @@ END_IF;
 
     def test_while_loop_line_numbers(self, twincat_parser, function_loops_fixture):
         """Test WHILE block line numbers are verified."""
-        chunks = twincat_parser.parse_file(function_loops_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         while_loops = find_by_metadata(block_chunks, "kind", "while_loop")
@@ -3276,7 +3322,7 @@ END_IF;
 
     def test_repeat_loop_line_numbers(self, twincat_parser, function_loops_fixture):
         """Test REPEAT block line numbers are verified."""
-        chunks = twincat_parser.parse_file(function_loops_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         repeat_loops = find_by_metadata(block_chunks, "kind", "repeat_loop")
@@ -3289,13 +3335,13 @@ END_IF;
         self, twincat_parser, function_action_fixture
     ):
         """Test blocks in ACTION have XML-absolute lines (not action-relative)."""
-        chunks = twincat_parser.parse_file(function_action_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_action_fixture)
         assert_no_parse_errors(twincat_parser)
         # Get action blocks only
         action_blocks = [
             c
             for c in chunks
-            if c.chunk_type == ChunkType.BLOCK and c.metadata.get("action_name")
+            if c.concept == UniversalConcept.BLOCK and c.metadata.get("action_name")
         ]
         assert len(action_blocks) >= 1
         for block in action_blocks:
@@ -3308,7 +3354,7 @@ END_IF;
         self, twincat_parser, function_loops_fixture
     ):
         """Test multiple blocks have increasing, non-overlapping line numbers."""
-        chunks = twincat_parser.parse_file(function_loops_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # Sort by start_line
@@ -3339,7 +3385,7 @@ END_FOR;
     </Implementation>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         assert len(block_chunks) >= 2
@@ -3379,19 +3425,19 @@ class TestMethodExtraction:
 
     def test_method_chunk_created(self, twincat_parser, method_fixture):
         """Test METHOD creates ChunkType.METHOD chunks."""
-        chunks = twincat_parser.parse_file(method_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
         assert len(method_chunks) == 3
-        method_names = {c.symbol for c in method_chunks}
+        method_names = {c.name for c in method_chunks}
         assert method_names == {"FB_WithMethods.Initialize", "FB_WithMethods.GetStatus", "FB_WithMethods.ProcessData"}
 
     def test_method_metadata(self, twincat_parser, method_fixture):
         """Test METHOD metadata includes kind='method', pou_name, method_id."""
-        chunks = twincat_parser.parse_file(method_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
-        init_method = [c for c in method_chunks if c.symbol == "FB_WithMethods.Initialize"][0]
+        init_method = [c for c in method_chunks if c.name == "FB_WithMethods.Initialize"][0]
 
         assert init_method.metadata["kind"] == "method"
         assert init_method.metadata["pou_type"] == "FUNCTION_BLOCK"
@@ -3400,7 +3446,7 @@ class TestMethodExtraction:
 
     def test_method_variables_extracted(self, twincat_parser, method_fixture):
         """Test METHOD variable declarations are extracted as FIELD chunks."""
-        chunks = twincat_parser.parse_file(method_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Variables from Initialize method: bReset, nInitValue, bLocalFlag
@@ -3408,49 +3454,50 @@ class TestMethodExtraction:
         assert len(init_vars) >= 3
 
         # Check that bReset is a VAR_INPUT with proper metadata
-        breset = [c for c in init_vars if c.symbol == "FB_WithMethods.Initialize.bReset"]
+        breset = [c for c in init_vars if c.name == "FB_WithMethods.Initialize.bReset"]
         assert len(breset) == 1
-        assert breset[0].chunk_type == ChunkType.FIELD
+        assert breset[0].concept == UniversalConcept.DEFINITION
+        assert breset[0].metadata["kind"] == "field"
         assert breset[0].metadata["var_class"] == "input"
         assert breset[0].metadata["data_type"] == "BOOL"
         assert breset[0].metadata["method_name"] == "Initialize"
 
     def test_method_blocks_extracted(self, twincat_parser, method_fixture):
         """Test METHOD control flow blocks are extracted as BLOCK chunks."""
-        chunks = twincat_parser.parse_file(method_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Initialize method has an IF block
         init_blocks = [
             c for c in chunks
-            if c.chunk_type == ChunkType.BLOCK
+            if c.concept == UniversalConcept.BLOCK
             and c.metadata.get("method_name") == "Initialize"
         ]
         assert len(init_blocks) >= 1
         assert init_blocks[0].metadata["kind"] == "if_block"
         # Verify FQN symbol pattern: POUName.MethodName.{kind}_{line}
-        assert init_blocks[0].symbol.startswith("FB_WithMethods.Initialize.if_block_")
+        assert init_blocks[0].name.startswith("FB_WithMethods.Initialize.if_block_")
 
     def test_method_code_includes_declaration_and_implementation(
         self, twincat_parser, method_fixture
     ):
         """Test METHOD chunk code contains both declaration and implementation."""
-        chunks = twincat_parser.parse_file(method_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
-        init_method = [c for c in method_chunks if c.symbol == "FB_WithMethods.Initialize"][0]
+        init_method = [c for c in method_chunks if c.name == "FB_WithMethods.Initialize"][0]
 
         # Declaration should include METHOD header and VAR blocks
-        assert "METHOD Initialize" in init_method.code
-        assert "VAR_INPUT" in init_method.code
-        assert "bReset" in init_method.code
+        assert "METHOD Initialize" in init_method.content
+        assert "VAR_INPUT" in init_method.content
+        assert "bReset" in init_method.content
 
         # Implementation should include the IF block
-        assert "IF bReset THEN" in init_method.code
+        assert "IF bReset THEN" in init_method.content
 
     def test_multiple_methods_have_unique_ids(self, twincat_parser, method_fixture):
         """Test each METHOD has unique method_id."""
-        chunks = twincat_parser.parse_file(method_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
         method_ids = [c.metadata["method_id"] for c in method_chunks]
@@ -3479,12 +3526,12 @@ END_VAR
     </Method>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
         assert len(method_chunks) == 1
-        assert method_chunks[0].symbol == "FB_Test.DoWork"
+        assert method_chunks[0].name == "FB_Test.DoWork"
         assert method_chunks[0].metadata["method_id"] == "{method-uuid}"
 
 
@@ -3511,19 +3558,19 @@ class TestPropertyExtraction:
 
     def test_property_chunk_created(self, twincat_parser, property_fixture):
         """Test PROPERTY creates ChunkType.PROPERTY chunks."""
-        chunks = twincat_parser.parse_file(property_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
         assert len(property_chunks) == 3
-        property_names = {c.symbol for c in property_chunks}
+        property_names = {c.name for c in property_chunks}
         assert property_names == {"FB_WithProperties.Value", "FB_WithProperties.ReadOnlyStatus", "FB_WithProperties.Name"}
 
     def test_property_metadata(self, twincat_parser, property_fixture):
         """Test PROPERTY metadata includes kind='property', pou_name, property_id."""
-        chunks = twincat_parser.parse_file(property_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        value_prop = [c for c in property_chunks if c.symbol == "FB_WithProperties.Value"][0]
+        value_prop = [c for c in property_chunks if c.name == "FB_WithProperties.Value"][0]
 
         assert value_prop.metadata["kind"] == "property"
         assert value_prop.metadata["pou_type"] == "FUNCTION_BLOCK"
@@ -3532,29 +3579,29 @@ class TestPropertyExtraction:
 
     def test_property_get_set_metadata(self, twincat_parser, property_fixture):
         """Test PROPERTY metadata includes has_get and has_set flags."""
-        chunks = twincat_parser.parse_file(property_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
 
         # Value property has both GET and SET
-        value_prop = [c for c in property_chunks if c.symbol == "FB_WithProperties.Value"][0]
+        value_prop = [c for c in property_chunks if c.name == "FB_WithProperties.Value"][0]
         assert value_prop.metadata["has_get"] is True
         assert value_prop.metadata["has_set"] is True
 
         # ReadOnlyStatus has only GET (no SET)
-        readonly_prop = [c for c in property_chunks if c.symbol == "FB_WithProperties.ReadOnlyStatus"][0]
+        readonly_prop = [c for c in property_chunks if c.name == "FB_WithProperties.ReadOnlyStatus"][0]
         assert readonly_prop.metadata["has_get"] is True
         assert readonly_prop.metadata["has_set"] is False
 
     def test_property_code_includes_accessors(self, twincat_parser, property_fixture):
         """Test PROPERTY chunk code contains GET and SET implementations."""
-        chunks = twincat_parser.parse_file(property_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        value_prop = [c for c in property_chunks if c.symbol == "FB_WithProperties.Value"][0]
+        value_prop = [c for c in property_chunks if c.name == "FB_WithProperties.Value"][0]
 
         # Code should include the GET and SET implementations
-        assert "nInternal" in value_prop.code
+        assert "nInternal" in value_prop.content
 
     def test_property_from_xml_string(self, twincat_parser):
         """Test PROPERTY extraction from inline XML."""
@@ -3589,12 +3636,12 @@ END_VAR
     </Property>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
         assert len(property_chunks) == 1
-        assert property_chunks[0].symbol == "FB_Test.MyProp"
+        assert property_chunks[0].name == "FB_Test.MyProp"
         assert property_chunks[0].metadata["property_id"] == "{prop-uuid}"
         assert property_chunks[0].metadata["has_get"] is True
         assert property_chunks[0].metadata["has_set"] is True
@@ -3624,7 +3671,7 @@ END_VAR
     </Property>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
@@ -3657,7 +3704,7 @@ END_VAR
     </Property>
   </POU>
 </TcPlcObject>"""
-        chunks = twincat_parser.parse_content(xml)
+        chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
@@ -3691,44 +3738,53 @@ class TestChunkNameInSourceCode:
           CDATA section start, not the declaration line
         """
         # Parse the comprehensive fixture
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Read the source file to get individual lines
         content = comprehensive_fixture.read_text()
         lines = content.splitlines()
 
-        # Chunk types to skip (synthetic names or special line handling)
-        skip_types = {
-            ChunkType.BLOCK,          # Synthetic names like if_block_295
-            ChunkType.COMMENT,        # Synthetic names like comment_line_4
-            ChunkType.FUNCTION_BLOCK, # start_line = CDATA start
-            ChunkType.PROGRAM,        # start_line = CDATA start
-            ChunkType.FUNCTION,       # start_line = CDATA start
+        # Chunk kinds to skip (synthetic names or special line handling)
+        # Using metadata["kind"] for UniversalChunk
+        skip_kinds = {
+            # BLOCK chunks have synthetic names like if_block_295, for_loop_XYZ
+            "if_block", "case_block", "for_loop", "while_loop", "repeat_loop",
+            # COMMENT chunks have synthetic names like comment_line_4
+            "comment",
+            # POU chunks: start_line = CDATA start, not declaration line
+            "function_block", "program", "function",
         }
 
         for chunk in chunks:
-            # Skip chunk types with synthetic names or special line handling
-            if chunk.chunk_type in skip_types:
+            # Skip chunks with synthetic names or special line handling
+            kind = chunk.metadata.get("kind", "")
+            if kind in skip_kinds:
+                continue
+            # Also skip BLOCK concept entirely (covers control flow blocks)
+            if chunk.concept == UniversalConcept.BLOCK:
+                continue
+            # Also skip COMMENT concept
+            if chunk.concept == UniversalConcept.COMMENT:
                 continue
 
             # Extract the name (last segment after the final '.')
-            name = chunk.symbol.rpartition('.')[2]
+            name = chunk.name.rpartition('.')[2]
 
             # Get lines at start_line and start_line+1 (1-based indexing)
             line_index = chunk.start_line - 1
             assert 0 <= line_index < len(lines), (
-                f"Chunk {chunk.symbol} has start_line {chunk.start_line} "
+                f"Chunk {chunk.name} has start_line {chunk.start_line} "
                 f"which is out of range (file has {len(lines)} lines)"
             )
 
             line1 = lines[line_index]
             line2 = lines[line_index + 1] if line_index + 1 < len(lines) else ""
 
-            # For variables (FIELD), check first two lines to cover pragma attributes
-            if chunk.chunk_type == ChunkType.FIELD:
+            # For variables (kind='field'), check first two lines to cover pragma attributes
+            if kind == "field":
                 assert name in line1 or name in line2, (
-                    f"Variable name '{name}' (from symbol '{chunk.symbol}') "
+                    f"Variable name '{name}' (from name '{chunk.name}') "
                     f"not found in lines {chunk.start_line}-{chunk.start_line + 1}:\n"
                     f"  Line {chunk.start_line}: '{line1}'\n"
                     f"  Line {chunk.start_line + 1}: '{line2}'"
@@ -3736,7 +3792,7 @@ class TestChunkNameInSourceCode:
             else:
                 # For non-variable chunks, keep single-line check
                 assert name in line1, (
-                    f"Chunk name '{name}' (from symbol '{chunk.symbol}') "
+                    f"Chunk name '{name}' (from name '{chunk.name}') "
                     f"not found in line {chunk.start_line}: '{line1}'"
                 )
 
@@ -3761,41 +3817,41 @@ class TestCommentExtraction:
 
     def test_comment_chunks_extracted(self, twincat_parser, comment_fixture):
         """Test that comment chunks are extracted from the fixture."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         assert len(comment_chunks) > 0, "Expected at least one comment chunk"
 
     def test_block_comment_type(self, twincat_parser, comment_fixture):
         """Test that block comments have comment_type='block' in metadata."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         block_comments = find_by_metadata(chunks, "comment_type", "block")
         assert len(block_comments) > 0, "Expected at least one block comment"
         for chunk in block_comments:
-            assert "(*" in chunk.code and "*)" in chunk.code
+            assert "(*" in chunk.content and "*)" in chunk.content
 
     def test_line_comment_type(self, twincat_parser, comment_fixture):
         """Test that line comments have comment_type='line' in metadata."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         line_comments = find_by_metadata(chunks, "comment_type", "line")
         assert len(line_comments) > 0, "Expected at least one line comment"
         for chunk in line_comments:
-            assert chunk.code.startswith("//")
+            assert chunk.content.startswith("//")
 
     def test_comment_fqn_format(self, twincat_parser, comment_fixture):
         """Test that comment FQNs follow pattern: POUName.comment_line_N."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
-            assert ".comment_line_" in chunk.symbol
-            assert chunk.symbol.startswith("FB_CommentExample.")
+            assert ".comment_line_" in chunk.name
+            assert chunk.name.startswith("FB_CommentExample.")
 
     def test_comment_has_cleaned_text(self, twincat_parser, comment_fixture):
         """Test that comment metadata includes cleaned_text without markers."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
@@ -3807,7 +3863,7 @@ class TestCommentExtraction:
 
     def test_comment_metadata_fields(self, twincat_parser, comment_fixture):
         """Test that comment chunks have required metadata fields."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
@@ -3819,24 +3875,25 @@ class TestCommentExtraction:
 
     def test_multiline_block_comment(self, twincat_parser, comment_fixture):
         """Test that multi-line block comments have correct end_line."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         block_comments = find_by_metadata(chunks, "comment_type", "block")
         # At least one multiline block comment should exist
         multiline = [c for c in block_comments if c.end_line > c.start_line]
         assert len(multiline) > 0, "Expected at least one multi-line block comment"
 
-    def test_comment_language_is_twincat(self, twincat_parser, comment_fixture):
-        """Test that all comment chunks have Language.TWINCAT."""
-        chunks = twincat_parser.parse_file(comment_fixture, FileId(1))
+    def test_comment_language_node_type(self, twincat_parser, comment_fixture):
+        """Test that all comment chunks have language_node_type indicating Lark origin."""
+        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
-            assert chunk.language == Language.TWINCAT
+            # UniversalChunk is language-agnostic but tracks origin
+            assert chunk.language_node_type == "lark_comment"
 
     def test_comprehensive_fixture_has_comments(self, twincat_parser, comprehensive_fixture):
         """Test that the comprehensive fixture also extracts comments."""
-        chunks = twincat_parser.parse_file(comprehensive_fixture, FileId(1))
+        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         # Comprehensive fixture has comments

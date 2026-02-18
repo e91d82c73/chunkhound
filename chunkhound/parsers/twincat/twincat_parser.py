@@ -31,6 +31,7 @@ from chunkhound.parsers.twincat.xml_extractor import (
     SourceLocation,
     TcPOUExtractor,
 )
+from chunkhound.parsers.universal_engine import UniversalChunk, UniversalConcept
 from chunkhound.parsers.universal_parser import CASTConfig
 
 # Regex patterns for comment extraction
@@ -114,6 +115,858 @@ class TwinCATParser:
         """Parse TcPOU XML string."""
         pou_content = self._extractor.extract_string(content)
         return self._process_pou_content(pou_content, file_path, file_id)
+
+    # =========================================================================
+    # UniversalChunk Extraction (for UniversalParser integration)
+    # =========================================================================
+
+    def extract_universal_chunks(
+        self,
+        content: str,
+        file_path: Path | None = None,
+    ) -> list[UniversalChunk]:
+        """Extract UniversalChunk objects from TcPOU content.
+
+        This method produces UniversalChunk objects that can flow through
+        the UniversalParser's cAST pipeline for deduplication, comment
+        merging, and greedy merge optimization.
+
+        Args:
+            content: TcPOU XML content string
+            file_path: Optional path to the source file
+
+        Returns:
+            List of UniversalChunk objects
+        """
+        pou_content = self._extractor.extract_string(content)
+        return self._process_pou_content_to_universal(pou_content, file_path)
+
+    def _process_pou_content_to_universal(
+        self,
+        content: POUContent,
+        file_path: Path | None,
+    ) -> list[UniversalChunk]:
+        """Process extracted POU content into UniversalChunk objects."""
+        self._parse_errors = []  # Clear errors at start of each parse
+        chunks: list[UniversalChunk] = []
+
+        # 1. Create main POU chunk (the whole PROGRAM/FUNCTION_BLOCK/FUNCTION)
+        pou_chunk = self._create_pou_universal_chunk(content, file_path)
+        if pou_chunk:
+            chunks.append(pou_chunk)
+
+        # 2. Parse declaration section → extract variable chunks
+        if content.declaration and content.declaration.strip():
+            try:
+                decl_tree = self.decl_parser.parse(content.declaration)
+                var_chunks = self._extract_var_universal_chunks_from_tree(
+                    decl_tree, content, file_path
+                )
+                chunks.extend(var_chunks)
+            except LarkError as e:
+                error_msg = f"Declaration parse error in {content.name}: {e}"
+                logger.error(error_msg)
+                self._parse_errors.append(error_msg)
+
+        # 3. Parse implementation for control flow blocks (all POU types)
+        if content.implementation and content.implementation.strip():
+            block_chunks = self._extract_block_universal_chunks_from_implementation(
+                content.implementation,
+                content.implementation_location,
+                content.name,
+                content.pou_type.upper(),
+                file_path,
+            )
+            chunks.extend(block_chunks)
+
+        # 4. Extract comments from declaration and implementation
+        decl_base_line = (
+            content.declaration_location.line if content.declaration_location else 1
+        )
+        impl_base_line = (
+            content.implementation_location.line
+            if content.implementation_location
+            else decl_base_line
+        )
+
+        if content.declaration and content.declaration.strip():
+            comment_chunks = self._extract_comment_universal_chunks(
+                content.declaration,
+                file_path,
+                content.name,
+                content.pou_type.upper(),
+                decl_base_line,
+            )
+            chunks.extend(comment_chunks)
+
+        if content.implementation and content.implementation.strip():
+            comment_chunks = self._extract_comment_universal_chunks(
+                content.implementation,
+                file_path,
+                content.name,
+                content.pou_type.upper(),
+                impl_base_line,
+            )
+            chunks.extend(comment_chunks)
+
+        # 5. Parse actions → create action chunks
+        for action in content.actions:
+            action_chunks = self._extract_action_universal_chunks(
+                action, content, file_path
+            )
+            chunks.extend(action_chunks)
+
+        # 6. Parse methods → create method chunks
+        for method in content.methods:
+            method_chunks = self._extract_method_universal_chunks(
+                method, content, file_path
+            )
+            chunks.extend(method_chunks)
+
+        # 7. Parse properties → create property chunks
+        for prop in content.properties:
+            property_chunks = self._extract_property_universal_chunks(
+                prop, content, file_path
+            )
+            chunks.extend(property_chunks)
+
+        return chunks
+
+    def _map_chunk_type_to_concept(self, chunk_type: ChunkType) -> UniversalConcept:
+        """Map TwinCAT ChunkType to UniversalConcept.
+
+        Mapping:
+        - PROGRAM, FUNCTION_BLOCK, FUNCTION → DEFINITION
+        - METHOD, ACTION, PROPERTY → DEFINITION
+        - VARIABLE, FIELD → DEFINITION
+        - BLOCK (control flow) → BLOCK
+        - COMMENT → COMMENT
+        """
+        if chunk_type in (
+            ChunkType.PROGRAM,
+            ChunkType.FUNCTION_BLOCK,
+            ChunkType.FUNCTION,
+            ChunkType.METHOD,
+            ChunkType.ACTION,
+            ChunkType.PROPERTY,
+            ChunkType.VARIABLE,
+            ChunkType.FIELD,
+        ):
+            return UniversalConcept.DEFINITION
+        elif chunk_type == ChunkType.BLOCK:
+            return UniversalConcept.BLOCK
+        elif chunk_type == ChunkType.COMMENT:
+            return UniversalConcept.COMMENT
+        else:
+            return UniversalConcept.DEFINITION  # Default for unknown types
+
+    def _create_universal_chunk(
+        self,
+        chunk_type: ChunkType,
+        name: str,
+        content: str,
+        start_line: int,
+        end_line: int,
+        metadata: dict[str, Any],
+        language_node_type: str,
+    ) -> UniversalChunk:
+        """Create UniversalChunk from TwinCAT extraction data.
+
+        Args:
+            chunk_type: The TwinCAT ChunkType
+            name: Symbol name for the chunk
+            content: Code content
+            start_line: Starting line number (1-based)
+            end_line: Ending line number (1-based)
+            metadata: Additional metadata dict
+            language_node_type: Original node type (using "lark_{rule}" format)
+
+        Returns:
+            UniversalChunk instance
+        """
+        # Store original ChunkType name for accurate reverse mapping
+        enriched_metadata = {
+            **metadata,
+            "chunk_type_hint": chunk_type.name.lower(),
+        }
+
+        return UniversalChunk(
+            concept=self._map_chunk_type_to_concept(chunk_type),
+            name=name,
+            content=content,
+            start_line=start_line,
+            end_line=end_line,
+            metadata=enriched_metadata,
+            language_node_type=language_node_type,
+        )
+
+    def _create_pou_universal_chunk(
+        self,
+        content: POUContent,
+        file_path: Path | None,
+    ) -> UniversalChunk | None:
+        """Create UniversalChunk for the main POU."""
+        # Combine declaration + implementation as the POU code
+        combined_code = content.declaration
+        if content.implementation and content.implementation.strip():
+            combined_code += "\n\n" + content.implementation
+
+        if not combined_code.strip():
+            return None
+
+        # Use XML locations for accurate line numbers
+        start_line = 1
+        if content.declaration_location:
+            start_line = content.declaration_location.line
+
+        end_line = start_line + combined_code.count("\n")
+
+        # Map POU type to ChunkType
+        pou_type = content.pou_type.upper()
+        if pou_type == "PROGRAM":
+            chunk_type = ChunkType.PROGRAM
+        elif pou_type == "FUNCTION_BLOCK":
+            chunk_type = ChunkType.FUNCTION_BLOCK
+        elif pou_type == "FUNCTION":
+            chunk_type = ChunkType.FUNCTION
+        else:
+            chunk_type = ChunkType.BLOCK
+
+        metadata = {
+            "kind": pou_type.lower(),
+            "pou_type": pou_type,
+            "pou_name": content.name,
+            "pou_id": content.id,
+        }
+
+        return self._create_universal_chunk(
+            chunk_type=chunk_type,
+            name=content.name,
+            content=combined_code,
+            start_line=start_line,
+            end_line=end_line,
+            metadata=metadata,
+            language_node_type="lark_pou",
+        )
+
+    def _extract_var_universal_chunks_from_tree(
+        self,
+        tree: Tree,
+        content: POUContent,
+        file_path: Path | None,
+        declaration_location: SourceLocation | None = None,
+        action_name: str | None = None,
+        method_name: str | None = None,
+    ) -> list[UniversalChunk]:
+        """Walk Lark tree and extract variable UniversalChunks from VAR blocks."""
+        chunks: list[UniversalChunk] = []
+
+        # Use provided location or fall back to POU declaration location
+        location = declaration_location or content.declaration_location
+
+        # Find all var_block nodes
+        var_blocks = self._find_nodes(tree, "var_block")
+
+        for var_block in var_blocks:
+            # Extract var class from var_block_start
+            var_class = "local"  # default
+            retain = False
+            persistent = False
+            constant = False
+
+            for child in var_block.children:
+                if isinstance(child, Tree):
+                    if child.data == "var_block_start":
+                        for token in child.children:
+                            if isinstance(token, Token):
+                                var_class = VAR_BLOCK_MAP.get(
+                                    token.type, token.value.lower()
+                                )
+                                break
+                    elif child.data == "var_qualifier":
+                        for token in child.children:
+                            if isinstance(token, Token):
+                                if token.type == "RETAIN":
+                                    retain = True
+                                elif token.type == "PERSISTENT":
+                                    persistent = True
+                                elif token.type == "CONSTANT":
+                                    constant = True
+                    elif child.data == "var_declaration":
+                        var_chunks = self._extract_var_decl_universal_chunk(
+                            child,
+                            content,
+                            file_path,
+                            var_class,
+                            retain,
+                            persistent,
+                            constant,
+                            location,
+                            action_name,
+                            method_name,
+                        )
+                        chunks.extend(var_chunks)
+
+        return chunks
+
+    def _extract_var_decl_universal_chunk(
+        self,
+        var_decl: Tree,
+        content: POUContent,
+        file_path: Path | None,
+        var_class: str,
+        retain: bool,
+        persistent: bool,
+        constant: bool,
+        declaration_location: SourceLocation | None = None,
+        action_name: str | None = None,
+        method_name: str | None = None,
+    ) -> list[UniversalChunk]:
+        """Extract UniversalChunk(s) from a var_declaration node."""
+        chunks: list[UniversalChunk] = []
+
+        # Collect variable names (IDENTIFIERs before the colon)
+        var_names: list[str] = []
+        data_type: str | None = None
+        hw_address: str | None = None
+
+        # Get line number from node metadata
+        line = var_decl.meta.line if hasattr(var_decl, "meta") and var_decl.meta else 1
+
+        # Use provided location or fall back to POU declaration location
+        location = declaration_location or content.declaration_location
+
+        # Adjust line number to XML position
+        adjusted_line = self._adjust_line_number(line, location)
+
+        for child in var_decl.children:
+            if isinstance(child, Token):
+                if child.type == "IDENTIFIER" and data_type is None:
+                    var_names.append(str(child))
+            elif isinstance(child, Tree):
+                if child.data == "hw_location":
+                    hw_addr_token = self._get_token_value(child, "HW_ADDRESS")
+                    if hw_addr_token:
+                        hw_address = hw_addr_token
+                elif child.data == "type_spec":
+                    data_type = self._extract_type_spec(child)
+
+        # Reconstruct the declaration code
+        code = ", ".join(var_names)
+        if hw_address:
+            code += f" AT {hw_address}"
+        code += f" : {data_type or 'UNKNOWN'};"
+
+        # Determine ChunkType and kind based on variable scope
+        if var_class in ("global", "external"):
+            chunk_type = ChunkType.VARIABLE
+            kind = "variable"
+        else:
+            chunk_type = ChunkType.FIELD
+            kind = "field"
+
+        # Build metadata
+        metadata: dict[str, Any] = {
+            "kind": kind,
+            "pou_type": content.pou_type,
+            "pou_name": content.name,
+            "var_class": var_class,
+            "data_type": data_type,
+            "hw_address": hw_address,
+            "retain": retain,
+            "persistent": persistent,
+            "constant": constant,
+        }
+        if action_name:
+            metadata["action_name"] = action_name
+        if method_name:
+            metadata["method_name"] = method_name
+
+        # Create a chunk for each variable name
+        for var_name in var_names:
+            fqn = self._build_fqn(content.name, var_name, method_name, action_name)
+            chunk = self._create_universal_chunk(
+                chunk_type=chunk_type,
+                name=fqn,
+                content=code,
+                start_line=adjusted_line,
+                end_line=adjusted_line,
+                metadata=metadata.copy(),
+                language_node_type="lark_var_declaration",
+            )
+            chunks.append(chunk)
+
+        return chunks
+
+    def _extract_action_universal_chunks(
+        self,
+        action: ActionContent,
+        content: POUContent,
+        file_path: Path | None,
+    ) -> list[UniversalChunk]:
+        """Create UniversalChunks for an action."""
+        chunks: list[UniversalChunk] = []
+
+        # Combine action declaration and implementation
+        action_code = ""
+        if action.declaration:
+            action_code = action.declaration
+
+        if action.implementation and action.implementation.strip():
+            if action_code:
+                action_code += "\n\n"
+            action_code += action.implementation
+
+        if not action_code.strip():
+            return chunks
+
+        # Use action's declaration location for start_line
+        start_line = 1
+        if action.declaration_location:
+            start_line = action.declaration_location.line
+        elif action.implementation_location:
+            start_line = action.implementation_location.line
+
+        end_line = start_line + action_code.count("\n")
+
+        # Create the main ACTION chunk
+        metadata = {
+            "kind": "action",
+            "pou_type": content.pou_type,
+            "pou_name": content.name,
+            "action_id": action.id,
+        }
+
+        chunk = self._create_universal_chunk(
+            chunk_type=ChunkType.ACTION,
+            name=f"{content.name}.{action.name}",
+            content=action_code,
+            start_line=start_line,
+            end_line=end_line,
+            metadata=metadata,
+            language_node_type="lark_action",
+        )
+        chunks.append(chunk)
+
+        # Parse action declaration for variables
+        if action.declaration and action.declaration.strip():
+            try:
+                decl_tree = self.decl_parser.parse(action.declaration)
+                var_chunks = self._extract_var_universal_chunks_from_tree(
+                    decl_tree,
+                    content,
+                    file_path,
+                    declaration_location=action.declaration_location,
+                    action_name=action.name,
+                )
+                chunks.extend(var_chunks)
+            except LarkError as e:
+                error_msg = f"Action '{action.name}' declaration parse error: {e}"
+                logger.error(error_msg)
+                self._parse_errors.append(error_msg)
+
+        # Parse action implementation for control flow blocks
+        if action.implementation and action.implementation.strip():
+            block_chunks = self._extract_block_universal_chunks_from_implementation(
+                action.implementation,
+                action.implementation_location,
+                content.name,
+                content.pou_type.upper(),
+                file_path,
+                action_name=action.name,
+            )
+            chunks.extend(block_chunks)
+
+        # Extract comments
+        if action.declaration and action.declaration.strip():
+            decl_base = (
+                action.declaration_location.line
+                if action.declaration_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_universal_chunks(
+                action.declaration,
+                file_path,
+                content.name,
+                content.pou_type.upper(),
+                decl_base,
+                action_name=action.name,
+            )
+            chunks.extend(comment_chunks)
+
+        if action.implementation and action.implementation.strip():
+            impl_base = (
+                action.implementation_location.line
+                if action.implementation_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_universal_chunks(
+                action.implementation,
+                file_path,
+                content.name,
+                content.pou_type.upper(),
+                impl_base,
+                action_name=action.name,
+            )
+            chunks.extend(comment_chunks)
+
+        return chunks
+
+    def _extract_method_universal_chunks(
+        self,
+        method: MethodContent,
+        content: POUContent,
+        file_path: Path | None,
+    ) -> list[UniversalChunk]:
+        """Create UniversalChunks for a method."""
+        chunks: list[UniversalChunk] = []
+
+        # Combine method declaration and implementation
+        method_code = method.declaration
+        if method.implementation and method.implementation.strip():
+            if method_code:
+                method_code += "\n\n"
+            method_code += method.implementation
+
+        if not method_code.strip():
+            return chunks
+
+        # Use method's declaration location for start_line
+        start_line = 1
+        if method.declaration_location:
+            start_line = method.declaration_location.line
+        elif method.implementation_location:
+            start_line = method.implementation_location.line
+
+        end_line = start_line + method_code.count("\n")
+
+        # Create the main METHOD chunk
+        metadata = {
+            "kind": "method",
+            "pou_type": content.pou_type,
+            "pou_name": content.name,
+            "method_id": method.id,
+        }
+
+        chunk = self._create_universal_chunk(
+            chunk_type=ChunkType.METHOD,
+            name=f"{content.name}.{method.name}",
+            content=method_code,
+            start_line=start_line,
+            end_line=end_line,
+            metadata=metadata,
+            language_node_type="lark_method",
+        )
+        chunks.append(chunk)
+
+        # Parse method declaration for variables
+        if method.declaration and method.declaration.strip():
+            try:
+                decl_tree = self.decl_parser.parse(method.declaration)
+                var_chunks = self._extract_var_universal_chunks_from_tree(
+                    decl_tree,
+                    content,
+                    file_path,
+                    declaration_location=method.declaration_location,
+                    method_name=method.name,
+                )
+                chunks.extend(var_chunks)
+            except LarkError as e:
+                error_msg = f"Method '{method.name}' declaration parse error: {e}"
+                logger.error(error_msg)
+                self._parse_errors.append(error_msg)
+
+        # Parse method implementation for control flow blocks
+        if method.implementation and method.implementation.strip():
+            block_chunks = self._extract_block_universal_chunks_from_implementation(
+                method.implementation,
+                method.implementation_location,
+                content.name,
+                content.pou_type.upper(),
+                file_path,
+                method_name=method.name,
+            )
+            chunks.extend(block_chunks)
+
+        # Extract comments
+        if method.declaration and method.declaration.strip():
+            decl_base = (
+                method.declaration_location.line
+                if method.declaration_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_universal_chunks(
+                method.declaration,
+                file_path,
+                content.name,
+                content.pou_type.upper(),
+                decl_base,
+                method_name=method.name,
+            )
+            chunks.extend(comment_chunks)
+
+        if method.implementation and method.implementation.strip():
+            impl_base = (
+                method.implementation_location.line
+                if method.implementation_location
+                else 1
+            )
+            comment_chunks = self._extract_comment_universal_chunks(
+                method.implementation,
+                file_path,
+                content.name,
+                content.pou_type.upper(),
+                impl_base,
+                method_name=method.name,
+            )
+            chunks.extend(comment_chunks)
+
+        return chunks
+
+    def _extract_property_universal_chunks(
+        self,
+        prop: PropertyContent,
+        content: POUContent,
+        file_path: Path | None,
+    ) -> list[UniversalChunk]:
+        """Create UniversalChunks for a property."""
+        chunks: list[UniversalChunk] = []
+
+        # Combine property declaration and accessor implementations
+        property_code = prop.declaration
+
+        if prop.get and prop.get.implementation and prop.get.implementation.strip():
+            if property_code:
+                property_code += "\n\n// GET\n"
+            property_code += prop.get.implementation
+
+        if prop.set and prop.set.implementation and prop.set.implementation.strip():
+            if property_code:
+                property_code += "\n\n// SET\n"
+            property_code += prop.set.implementation
+
+        if not property_code.strip():
+            return chunks
+
+        # Calculate start_line from property declaration location
+        start_line = 1
+        if prop.declaration_location:
+            start_line = prop.declaration_location.line
+        end_line = start_line + property_code.count("\n")
+
+        # Create the main PROPERTY chunk
+        metadata = {
+            "kind": "property",
+            "pou_type": content.pou_type,
+            "pou_name": content.name,
+            "property_id": prop.id,
+            "has_get": prop.get is not None,
+            "has_set": prop.set is not None,
+        }
+
+        chunk = self._create_universal_chunk(
+            chunk_type=ChunkType.PROPERTY,
+            name=f"{content.name}.{prop.name}",
+            content=property_code,
+            start_line=start_line,
+            end_line=end_line,
+            metadata=metadata,
+            language_node_type="lark_property",
+        )
+        chunks.append(chunk)
+
+        return chunks
+
+    def _extract_block_universal_chunks_from_implementation(
+        self,
+        implementation: str,
+        implementation_location: SourceLocation | None,
+        pou_name: str,
+        pou_type: str,
+        file_path: Path | None,
+        action_name: str | None = None,
+        method_name: str | None = None,
+    ) -> list[UniversalChunk]:
+        """Extract control flow blocks as UniversalChunks."""
+        chunks: list[UniversalChunk] = []
+
+        try:
+            tree = self.impl_parser.parse(implementation)
+        except LarkError as e:
+            if method_name:
+                context = f"method '{method_name}'"
+            elif action_name:
+                context = f"action '{action_name}'"
+            else:
+                context = f"FUNCTION '{pou_name}'"
+            error_msg = f"Implementation parse error in {context}: {e}"
+            logger.error(error_msg)
+            self._parse_errors.append(error_msg)
+            return chunks
+
+        # Find all control flow statement nodes
+        statement_nodes = self._find_statement_nodes(tree)
+
+        for node in statement_nodes:
+            chunk = self._create_block_universal_chunk(
+                node,
+                implementation,
+                implementation_location,
+                pou_name,
+                pou_type,
+                file_path,
+                action_name,
+                method_name,
+            )
+            if chunk:
+                chunks.append(chunk)
+
+        return chunks
+
+    def _create_block_universal_chunk(
+        self,
+        node: Tree,
+        implementation: str,
+        implementation_location: SourceLocation | None,
+        pou_name: str,
+        pou_type: str,
+        file_path: Path | None,
+        action_name: str | None,
+        method_name: str | None = None,
+    ) -> UniversalChunk | None:
+        """Create UniversalChunk for a control flow block."""
+        # Get line numbers from node metadata
+        if not hasattr(node, "meta") or node.meta is None:
+            return None
+
+        start_line = node.meta.line
+        end_line = node.meta.end_line or start_line
+
+        # Reconstruct code from implementation using line numbers
+        code = self._reconstruct_code_from_lines(implementation, start_line, end_line)
+
+        # Adjust line numbers to XML-absolute
+        adjusted_start = self._adjust_line_number(start_line, implementation_location)
+        adjusted_end = self._adjust_line_number(end_line, implementation_location)
+
+        # Determine kind from statement type
+        kind = self._STATEMENT_KIND_MAP.get(node.data, "block")
+
+        # Build FQN
+        symbol = self._build_fqn(
+            pou_name, f"{kind}_{adjusted_start}", method_name, action_name
+        )
+
+        # Build metadata
+        metadata: dict[str, Any] = {
+            "kind": kind,
+            "pou_type": pou_type,
+            "pou_name": pou_name,
+        }
+        if action_name:
+            metadata["action_name"] = action_name
+        if method_name:
+            metadata["method_name"] = method_name
+
+        return self._create_universal_chunk(
+            chunk_type=ChunkType.BLOCK,
+            name=symbol,
+            content=code,
+            start_line=adjusted_start,
+            end_line=adjusted_end,
+            metadata=metadata,
+            language_node_type=f"lark_{node.data}",
+        )
+
+    def _extract_comment_universal_chunks(
+        self,
+        source: str,
+        file_path: Path | None,
+        pou_name: str,
+        pou_type: str,
+        base_line: int,
+        method_name: str | None = None,
+        action_name: str | None = None,
+    ) -> list[UniversalChunk]:
+        """Extract comments as UniversalChunks."""
+        chunks: list[UniversalChunk] = []
+
+        # Block comments: (* ... *)
+        for match in BLOCK_COMMENT_RE.finditer(source):
+            line = source[: match.start()].count("\n") + base_line
+            chunk = self._create_comment_universal_chunk(
+                content=match.group(),
+                line=line,
+                file_path=file_path,
+                pou_name=pou_name,
+                pou_type=pou_type,
+                comment_type="block",
+                method_name=method_name,
+                action_name=action_name,
+            )
+            chunks.append(chunk)
+
+        # Line comments: // ...
+        for match in LINE_COMMENT_RE.finditer(source):
+            line = source[: match.start()].count("\n") + base_line
+            chunk = self._create_comment_universal_chunk(
+                content=match.group(),
+                line=line,
+                file_path=file_path,
+                pou_name=pou_name,
+                pou_type=pou_type,
+                comment_type="line",
+                method_name=method_name,
+                action_name=action_name,
+            )
+            chunks.append(chunk)
+
+        return chunks
+
+    def _create_comment_universal_chunk(
+        self,
+        content: str,
+        line: int,
+        file_path: Path | None,
+        pou_name: str,
+        pou_type: str,
+        comment_type: str,
+        method_name: str | None = None,
+        action_name: str | None = None,
+    ) -> UniversalChunk:
+        """Create a comment UniversalChunk."""
+        # Build FQN
+        element_name = f"comment_line_{line}"
+        fqn = self._build_fqn(pou_name, element_name, method_name, action_name)
+
+        # Calculate end line for multi-line block comments
+        end_line = line + content.count("\n")
+
+        # Clean comment text (strip markers)
+        cleaned_text = self._clean_st_comment(content)
+
+        # Build metadata
+        metadata: dict[str, Any] = {
+            "kind": "comment",
+            "comment_type": comment_type,
+            "pou_name": pou_name,
+            "pou_type": pou_type,
+            "cleaned_text": cleaned_text,
+        }
+        if method_name:
+            metadata["method_name"] = method_name
+        if action_name:
+            metadata["action_name"] = action_name
+
+        return self._create_universal_chunk(
+            chunk_type=ChunkType.COMMENT,
+            name=fqn,
+            content=content,
+            start_line=line,
+            end_line=end_line,
+            metadata=metadata,
+            language_node_type="lark_comment",
+        )
 
     def _process_pou_content(
         self,
