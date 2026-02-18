@@ -24,9 +24,9 @@ pou_declaration: pou_header var_block* pou_end?
 action_declaration: var_block+
 
 // Method declarations (within FUNCTION_BLOCK)
-method_declaration: method_header var_block* method_end?
+method_declaration: attribute* method_header var_block* method_end?
 
-method_header: METHOD access_specifier? IDENTIFIER ":" type_spec
+method_header: METHOD access_specifier? IDENTIFIER (":" type_spec)?
 
 access_specifier: PUBLIC | PRIVATE | PROTECTED | INTERNAL | FINAL | ABSTRACT
 
@@ -101,7 +101,24 @@ initial_value: literal
              | array_initializer
              | struct_initializer
              | const_expression
-             | IDENTIFIER
+             | identifier_value
+
+// Combined rule for IDENTIFIER-starting initial values
+// Left-factors the common IDENTIFIER prefix to eliminate shift-reduce conflict
+// After IDENTIFIER, the parser looks ahead to determine:
+//   - "(" → function_call path
+//   - "." or end → qualified_identifier path
+identifier_value: IDENTIFIER "(" (init_call_arg ("," init_call_arg)*)? ")" -> function_call
+                | IDENTIFIER ("." IDENTIFIER)* -> qualified_identifier
+
+init_call_arg: IDENTIFIER ":=" init_call_arg_value?
+             | init_call_arg_value
+
+// Values that can appear as function call arguments
+// Uses same left-factoring pattern as identifier_value for IDENTIFIER-starting alternatives
+init_call_arg_value: literal
+                   | IDENTIFIER "(" (init_call_arg ("," init_call_arg)*)? ")" -> function_call
+                   | IDENTIFIER ("." IDENTIFIER)* -> qualified_identifier
 
 // Constant expressions (for use in initial values)
 const_expression: SIZEOF "(" type_or_var ")"
