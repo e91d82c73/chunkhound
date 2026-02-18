@@ -546,11 +546,14 @@ class ParserFactory:
 
             return SvelteParser(cast_config)
 
-        # Special case: TwinCAT uses Lark-based custom parser
+        # Special case: TwinCAT uses Lark-based custom parser via mapping
+        # This routes TwinCAT through UniversalParser to benefit from
+        # cAST algorithm (deduplication, comment merging, greedy merge)
         if language == Language.TWINCAT:
-            from chunkhound.parsers.twincat.twincat_parser import TwinCATParser
+            from chunkhound.parsers.twincat.twincat_mapping import TwinCATMapping
 
-            return TwinCATParser(cast_config)
+            mapping = TwinCATMapping()
+            return UniversalParser(engine=None, mapping=mapping, cast_config=cast_config)
 
         # Use cache to avoid recreating parsers
         cache_key = self._cache_key(language)
