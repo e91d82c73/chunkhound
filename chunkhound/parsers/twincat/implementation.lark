@@ -56,7 +56,10 @@ case_element: case_label ("," case_label)* ":" statement*
 
 case_label: integer_value
           | integer_value ".." integer_value
-          | IDENTIFIER
+          | enum_qualified_name
+
+// Enum qualified name for CASE labels (e.g., EnumType.member)
+enum_qualified_name: IDENTIFIER ("." IDENTIFIER)*
 
 // FOR loop - supports both normal syntax and parenthesized initial assignment
 for_stmt: FOR IDENTIFIER ASSIGN expression TO expression by_clause? DO statement* END_FOR ";"?
@@ -131,6 +134,7 @@ variable: IDENTIFIER accessor*
 accessor: "." IDENTIFIER -> member_access
         | "." INTEGER -> bit_access
         | "[" expression ("," expression)* "]" -> array_access
+        | "^" -> dereference
 
 // Literals
 literal: boolean_literal
