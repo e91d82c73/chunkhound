@@ -446,7 +446,11 @@ END_VAR
         assert var_chunks[0].metadata["var_class"] == "global"
 
     def test_var_external_is_variable(self, twincat_parser):
-        """Test VAR_EXTERNAL creates VARIABLE chunk with var_class='external'."""
+        """Test VAR_EXTERNAL creates VARIABLE chunk with var_class='external'.
+
+        Note: VAR_EXTERNAL also creates an IMPORT chunk, but this test verifies
+        the DEFINITION chunk specifically.
+        """
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
@@ -460,7 +464,11 @@ END_VAR
 </TcPlcObject>"""
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
-        var_chunks = find_by_symbol(chunks, "FB_Test.extValue")
+        # Filter by symbol AND concept=DEFINITION (there's also an IMPORT chunk)
+        var_chunks = [
+            c for c in find_by_symbol(chunks, "FB_Test.extValue")
+            if c.concept == UniversalConcept.DEFINITION
+        ]
         assert len(var_chunks) == 1
         assert var_chunks[0].concept == UniversalConcept.DEFINITION
         assert var_chunks[0].metadata["kind"] == "variable"
@@ -3767,6 +3775,9 @@ class TestChunkNameInSourceCode:
             # Also skip COMMENT concept
             if chunk.concept == UniversalConcept.COMMENT:
                 continue
+            # Also skip IMPORT concept (FQN format is POUName:import_type:reference)
+            if chunk.concept == UniversalConcept.IMPORT:
+                continue
 
             # Extract the name (last segment after the final '.')
             name = chunk.name.rpartition('.')[2]
@@ -3898,3 +3909,408 @@ class TestCommentExtraction:
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         # Comprehensive fixture has comments
         assert len(comment_chunks) > 0, "Expected comments in comprehensive fixture"
+
+
+# =============================================================================
+# TestImportExtraction
+# =============================================================================
+
+
+def find_imports_by_type(chunks: list[UniversalChunk], import_type: str) -> list[UniversalChunk]:
+    """Filter chunks by concept=IMPORT and import_type metadata."""
+    return [
+        c for c in chunks
+        if c.concept == UniversalConcept.IMPORT
+        and c.metadata.get("import_type") == import_type
+    ]
+
+
+class TestImportExtraction:
+    """Test IMPORT concept extraction (VAR_EXTERNAL, EXTENDS, IMPLEMENTS, type references)."""
+
+    # --- VAR_EXTERNAL Tests ---
+
+    def test_var_external_creates_import_chunk(self, twincat_parser):
+        """Test VAR_EXTERNAL creates IMPORT chunk with import_type='var_external'."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR_EXTERNAL
+    nGlobalCounter : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "var_external")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].concept == UniversalConcept.IMPORT
+        assert import_chunks[0].metadata["var_name"] == "nGlobalCounter"
+        assert import_chunks[0].metadata["data_type"] == "DINT"
+
+    def test_var_external_import_metadata(self, twincat_parser):
+        """Test VAR_EXTERNAL import has all required metadata fields."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR_EXTERNAL
+    extValue : REAL;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "var_external")
+        assert len(import_chunks) == 1
+        metadata = import_chunks[0].metadata
+        assert metadata["kind"] == "import"
+        assert metadata["import_type"] == "var_external"
+        assert metadata["var_class"] == "external"
+        assert metadata["pou_name"] == "FB_Test"
+        assert metadata["pou_type"] == "FUNCTION_BLOCK"
+
+    def test_multiple_var_external(self, twincat_parser):
+        """Test multiple VAR_EXTERNAL declarations create multiple import chunks."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR_EXTERNAL
+    nCounter : DINT;
+    fTemperature : REAL;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "var_external")
+        assert len(import_chunks) == 2
+        names = {c.metadata["var_name"] for c in import_chunks}
+        assert names == {"nCounter", "fTemperature"}
+
+    # --- EXTENDS Tests ---
+
+    def test_extends_creates_import_chunk(self, twincat_parser):
+        """Test EXTENDS clause creates IMPORT chunk with import_type='extends'."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Child" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Child EXTENDS FB_Parent
+VAR
+    nValue : INT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "extends")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].concept == UniversalConcept.IMPORT
+        assert import_chunks[0].metadata["base_type"] == "FB_Parent"
+        assert import_chunks[0].metadata["target_type"] == "FB_Child"
+
+    def test_extends_import_fqn(self, twincat_parser):
+        """Test EXTENDS import FQN follows pattern: POUName:extends:BaseType."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Motor" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Motor EXTENDS FB_Device
+VAR
+    n : INT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "extends")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].name == "FB_Motor:extends:FB_Device"
+
+    # --- IMPLEMENTS Tests ---
+
+    def test_implements_creates_import_chunk(self, twincat_parser):
+        """Test IMPLEMENTS clause creates IMPORT chunk with import_type='implements'."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Motor" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Motor IMPLEMENTS I_Motor
+VAR
+    nValue : INT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "implements")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].concept == UniversalConcept.IMPORT
+        assert import_chunks[0].metadata["interface_name"] == "I_Motor"
+        assert import_chunks[0].metadata["implementing_type"] == "FB_Motor"
+
+    def test_multiple_implements(self, twincat_parser):
+        """Test multiple IMPLEMENTS interfaces create multiple import chunks."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Motor" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Motor IMPLEMENTS I_Motor, I_Device, I_Runnable
+VAR
+    n : INT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "implements")
+        assert len(import_chunks) == 3
+        interface_names = {c.metadata["interface_name"] for c in import_chunks}
+        assert interface_names == {"I_Motor", "I_Device", "I_Runnable"}
+
+    def test_extends_and_implements_together(self, twincat_parser):
+        """Test EXTENDS and IMPLEMENTS can be used together."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Child" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Child EXTENDS FB_Parent IMPLEMENTS I_Child, I_Other
+VAR
+    n : INT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+
+        extends_chunks = find_imports_by_type(chunks, "extends")
+        assert len(extends_chunks) == 1
+        assert extends_chunks[0].metadata["base_type"] == "FB_Parent"
+
+        implements_chunks = find_imports_by_type(chunks, "implements")
+        assert len(implements_chunks) == 2
+        interface_names = {c.metadata["interface_name"] for c in implements_chunks}
+        assert interface_names == {"I_Child", "I_Other"}
+
+    # --- Type Reference Tests ---
+
+    def test_user_type_reference_creates_import(self, twincat_parser):
+        """Test user-defined type reference creates IMPORT chunk."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    fbMotor : FB_Motor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].metadata["referenced_type"] == "FB_Motor"
+        assert import_chunks[0].metadata["var_name"] == "fbMotor"
+
+    def test_primitive_types_not_imported(self, twincat_parser):
+        """Test primitive types (BOOL, INT, REAL, etc.) don't create type_reference imports."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    bFlag : BOOL;
+    nCount : INT;
+    fValue : REAL;
+    tDelay : TIME;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        # No imports for primitive types
+        assert len(import_chunks) == 0
+
+    def test_array_of_user_type_creates_import(self, twincat_parser):
+        """Test ARRAY OF user-defined type creates type_reference import."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    aMotors : ARRAY[0..9] OF FB_Motor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].metadata["referenced_type"] == "FB_Motor"
+
+    def test_pointer_to_user_type_creates_import(self, twincat_parser):
+        """Test POINTER TO user-defined type creates type_reference import."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    pMotor : POINTER TO FB_Motor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].metadata["referenced_type"] == "FB_Motor"
+
+    def test_reference_to_user_type_creates_import(self, twincat_parser):
+        """Test REFERENCE TO user-defined type creates type_reference import."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    refMotor : REFERENCE TO FB_Motor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].metadata["referenced_type"] == "FB_Motor"
+
+    def test_type_reference_deduplication(self, twincat_parser):
+        """Test same user type referenced multiple times creates only one import."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    fbMotor1 : FB_Motor;
+    fbMotor2 : FB_Motor;
+    fbMotor3 : FB_Motor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        # Only one import despite three usages
+        assert len(import_chunks) == 1
+        assert import_chunks[0].metadata["referenced_type"] == "FB_Motor"
+
+    def test_type_reference_fqn_format(self, twincat_parser):
+        """Test type_reference import FQN follows pattern: POUName:type_ref:TypeName."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Test
+VAR
+    fbDevice : FB_Device;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+        import_chunks = find_imports_by_type(chunks, "type_reference")
+        assert len(import_chunks) == 1
+        assert import_chunks[0].name == "FB_Test:type_ref:FB_Device"
+
+    # --- Combined Import Tests ---
+
+    def test_all_import_types_together(self, twincat_parser):
+        """Test extraction of all import types in a single POU."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Child" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Child EXTENDS FB_Parent IMPLEMENTS I_Motor
+VAR_EXTERNAL
+    nGlobalCounter : DINT;
+END_VAR
+VAR
+    fbDriver : FB_MotorDriver;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+
+        # Check all import types present
+        var_external = find_imports_by_type(chunks, "var_external")
+        extends = find_imports_by_type(chunks, "extends")
+        implements = find_imports_by_type(chunks, "implements")
+        type_refs = find_imports_by_type(chunks, "type_reference")
+
+        assert len(var_external) == 1
+        assert var_external[0].metadata["var_name"] == "nGlobalCounter"
+
+        assert len(extends) == 1
+        assert extends[0].metadata["base_type"] == "FB_Parent"
+
+        assert len(implements) == 1
+        assert implements[0].metadata["interface_name"] == "I_Motor"
+
+        assert len(type_refs) == 1
+        assert type_refs[0].metadata["referenced_type"] == "FB_MotorDriver"
+
+    def test_import_chunks_have_language_node_type(self, twincat_parser):
+        """Test all import chunks have appropriate language_node_type."""
+        xml = """<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Child" Id="{1234}" SpecialFunc="None">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Child EXTENDS FB_Parent IMPLEMENTS I_Motor
+VAR_EXTERNAL
+    nCounter : DINT;
+END_VAR
+VAR
+    fbMotor : FB_Motor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[]]></ST></Implementation>
+  </POU>
+</TcPlcObject>"""
+        chunks = twincat_parser.extract_universal_chunks(xml)
+        assert_no_parse_errors(twincat_parser)
+
+        import_chunks = [c for c in chunks if c.concept == UniversalConcept.IMPORT]
+        assert len(import_chunks) == 4  # var_external, extends, implements, type_ref
+
+        node_types = {c.language_node_type for c in import_chunks}
+        assert "lark_var_external" in node_types
+        assert "lark_extends" in node_types
+        assert "lark_implements" in node_types
+        assert "lark_type_reference" in node_types

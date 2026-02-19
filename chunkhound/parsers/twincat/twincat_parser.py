@@ -210,6 +210,10 @@ class TwinCATParser:
             )
             chunks.extend(property_chunks)
 
+        # 8. Extract imports (VAR_EXTERNAL, EXTENDS, IMPLEMENTS, type references)
+        import_chunks = self._extract_import_universal_chunks_from_pou(content)
+        chunks.extend(import_chunks)
+
         return chunks
 
     def _map_chunk_type_to_concept(self, chunk_type: ChunkType) -> UniversalConcept:
@@ -1160,3 +1164,401 @@ class TwinCATParser:
         elif cleaned.startswith("//"):
             cleaned = cleaned[2:].strip()
         return cleaned
+
+    # =========================================================================
+    # Import Extraction (Tier 5 - Dependencies)
+    # =========================================================================
+
+    # Primitive types to skip when extracting type references
+    _PRIMITIVE_TYPES = frozenset({
+        "BOOL", "BYTE", "WORD", "DWORD", "LWORD",
+        "SINT", "USINT", "INT", "UINT", "DINT", "UDINT", "LINT", "ULINT",
+        "REAL", "LREAL", "TIME", "DATE", "TIME_OF_DAY", "DATE_AND_TIME",
+        "STRING", "WSTRING", "TOD", "DT",
+    })
+
+    def extract_import_chunks(
+        self,
+        content: str,
+    ) -> list[UniversalChunk]:
+        """Extract import-like constructs as UniversalChunks.
+
+        Public method for efficient import-only extraction.
+
+        Extracts:
+        - VAR_EXTERNAL references to global variables
+        - EXTENDS inheritance clauses
+        - IMPLEMENTS interface implementations
+        - User-defined type references in variable declarations
+
+        Args:
+            content: TcPOU XML content string
+
+        Returns:
+            List of UniversalChunk objects representing imports
+        """
+        pou_content = self._extractor.extract_string(content)
+        return self._extract_import_universal_chunks_from_pou(pou_content)
+
+    def _extract_import_universal_chunks_from_pou(
+        self,
+        content: POUContent,
+    ) -> list[UniversalChunk]:
+        """Extract import-like constructs as UniversalChunks.
+
+        Extracts:
+        - VAR_EXTERNAL references to global variables
+        - EXTENDS inheritance clauses
+        - IMPLEMENTS interface implementations
+        - User-defined type references in variable declarations
+        """
+        chunks: list[UniversalChunk] = []
+
+        # Parse declaration section
+        if not content.declaration or not content.declaration.strip():
+            return chunks
+
+        try:
+            decl_tree = self.decl_parser.parse(content.declaration)
+        except LarkError:
+            # Parse errors already logged in main extraction
+            return chunks
+
+        # 1. Extract VAR_EXTERNAL imports
+        var_external_chunks = self._extract_var_external_imports(decl_tree, content)
+        chunks.extend(var_external_chunks)
+
+        # 2. Extract EXTENDS/IMPLEMENTS from pou_header
+        inheritance_chunks = self._extract_inheritance_imports(decl_tree, content)
+        chunks.extend(inheritance_chunks)
+
+        # 3. Extract user-defined type references
+        type_ref_chunks = self._extract_type_reference_imports(decl_tree, content)
+        chunks.extend(type_ref_chunks)
+
+        return chunks
+
+    def _extract_var_external_imports(
+        self,
+        tree: Tree,
+        content: POUContent,
+    ) -> list[UniversalChunk]:
+        """Extract VAR_EXTERNAL declarations as import chunks."""
+        chunks: list[UniversalChunk] = []
+
+        # Find all var_block nodes
+        var_blocks = self._find_nodes(tree, "var_block")
+
+        for var_block in var_blocks:
+            # Check if this is a VAR_EXTERNAL block
+            is_external = False
+            for child in var_block.children:
+                if isinstance(child, Tree) and child.data == "var_block_start":
+                    for token in child.children:
+                        if isinstance(token, Token) and token.type == "VAR_EXTERNAL":
+                            is_external = True
+                            break
+                    break
+
+            if not is_external:
+                continue
+
+            # Extract variable declarations from this VAR_EXTERNAL block
+            for child in var_block.children:
+                if isinstance(child, Tree) and child.data == "var_declaration":
+                    chunk = self._create_var_external_import_chunk(child, content)
+                    if chunk:
+                        chunks.append(chunk)
+
+        return chunks
+
+    def _create_var_external_import_chunk(
+        self,
+        var_decl: Tree,
+        content: POUContent,
+    ) -> UniversalChunk | None:
+        """Create import chunk for a VAR_EXTERNAL declaration."""
+        # Extract variable name and type
+        var_names: list[str] = []
+        data_type: str | None = None
+
+        for child in var_decl.children:
+            if isinstance(child, Token) and child.type == "IDENTIFIER":
+                if data_type is None:  # Names come before the type
+                    var_names.append(str(child))
+            elif isinstance(child, Tree) and child.data == "type_spec":
+                data_type = self._extract_type_spec(child)
+
+        if not var_names:
+            return None
+
+        # Use first variable name for the chunk
+        var_name = var_names[0]
+
+        # Get line number
+        line = var_decl.meta.line if hasattr(var_decl, "meta") and var_decl.meta else 1
+        adjusted_line = self._adjust_line_number(line, content.declaration_location)
+
+        # Build FQN
+        fqn = f"{content.name}.{var_name}"
+
+        # Reconstruct declaration code
+        code = f"{', '.join(var_names)} : {data_type or 'UNKNOWN'};"
+
+        metadata: dict[str, Any] = {
+            "kind": "import",
+            "import_type": "var_external",
+            "var_name": var_name,
+            "data_type": data_type,
+            "var_class": "external",
+            "pou_name": content.name,
+            "pou_type": content.pou_type.upper(),
+        }
+
+        return UniversalChunk(
+            concept=UniversalConcept.IMPORT,
+            name=fqn,
+            content=code,
+            start_line=adjusted_line,
+            end_line=adjusted_line,
+            metadata=metadata,
+            language_node_type="lark_var_external",
+        )
+
+    def _extract_inheritance_imports(
+        self,
+        tree: Tree,
+        content: POUContent,
+    ) -> list[UniversalChunk]:
+        """Extract EXTENDS and IMPLEMENTS clauses as import chunks."""
+        chunks: list[UniversalChunk] = []
+
+        # Find pou_header node
+        pou_headers = self._find_nodes(tree, "pou_header")
+        if not pou_headers:
+            return chunks
+
+        pou_header = pou_headers[0]
+
+        # Extract extends_clause
+        extends_clauses = self._find_nodes(pou_header, "extends_clause")
+        for extends_clause in extends_clauses:
+            chunk = self._create_extends_import_chunk(extends_clause, content)
+            if chunk:
+                chunks.append(chunk)
+
+        # Extract implements_clause
+        implements_clauses = self._find_nodes(pou_header, "implements_clause")
+        for implements_clause in implements_clauses:
+            impl_chunks = self._create_implements_import_chunks(
+                implements_clause, content
+            )
+            chunks.extend(impl_chunks)
+
+        return chunks
+
+    def _create_extends_import_chunk(
+        self,
+        extends_clause: Tree,
+        content: POUContent,
+    ) -> UniversalChunk | None:
+        """Create import chunk for EXTENDS clause."""
+        # Extract base type identifier
+        base_type: str | None = None
+        for child in extends_clause.children:
+            if isinstance(child, Token) and child.type == "IDENTIFIER":
+                base_type = str(child)
+                break
+
+        if not base_type:
+            return None
+
+        # Get line number
+        line = (
+            extends_clause.meta.line
+            if hasattr(extends_clause, "meta") and extends_clause.meta
+            else 1
+        )
+        adjusted_line = self._adjust_line_number(line, content.declaration_location)
+
+        # Build FQN
+        fqn = f"{content.name}:extends:{base_type}"
+
+        metadata: dict[str, Any] = {
+            "kind": "import",
+            "import_type": "extends",
+            "base_type": base_type,
+            "target_type": content.name,
+            "pou_name": content.name,
+            "pou_type": content.pou_type.upper(),
+        }
+
+        return UniversalChunk(
+            concept=UniversalConcept.IMPORT,
+            name=fqn,
+            content=f"EXTENDS {base_type}",
+            start_line=adjusted_line,
+            end_line=adjusted_line,
+            metadata=metadata,
+            language_node_type="lark_extends",
+        )
+
+    def _create_implements_import_chunks(
+        self,
+        implements_clause: Tree,
+        content: POUContent,
+    ) -> list[UniversalChunk]:
+        """Create import chunks for IMPLEMENTS clause (multiple interfaces)."""
+        chunks: list[UniversalChunk] = []
+
+        # Get line number
+        line = (
+            implements_clause.meta.line
+            if hasattr(implements_clause, "meta") and implements_clause.meta
+            else 1
+        )
+        adjusted_line = self._adjust_line_number(line, content.declaration_location)
+
+        # Extract all interface identifiers
+        for child in implements_clause.children:
+            if isinstance(child, Token) and child.type == "IDENTIFIER":
+                interface_name = str(child)
+
+                # Build FQN
+                fqn = f"{content.name}:implements:{interface_name}"
+
+                metadata: dict[str, Any] = {
+                    "kind": "import",
+                    "import_type": "implements",
+                    "interface_name": interface_name,
+                    "implementing_type": content.name,
+                    "pou_name": content.name,
+                    "pou_type": content.pou_type.upper(),
+                }
+
+                chunk = UniversalChunk(
+                    concept=UniversalConcept.IMPORT,
+                    name=fqn,
+                    content=f"IMPLEMENTS {interface_name}",
+                    start_line=adjusted_line,
+                    end_line=adjusted_line,
+                    metadata=metadata,
+                    language_node_type="lark_implements",
+                )
+                chunks.append(chunk)
+
+        return chunks
+
+    def _extract_type_reference_imports(
+        self,
+        tree: Tree,
+        content: POUContent,
+    ) -> list[UniversalChunk]:
+        """Extract user-defined type references as import chunks.
+
+        Scans all variable declarations for non-primitive type usage:
+        - Direct: fbMotor : FB_Motor
+        - Arrays: ARRAY[...] OF FB_Type
+        - Pointers: POINTER TO FB_Type
+        - References: REFERENCE TO FB_Type
+        """
+        chunks: list[UniversalChunk] = []
+        seen_types: set[str] = set()  # Deduplicate type references
+
+        # Find all var_declaration nodes
+        var_decls = self._find_nodes(tree, "var_declaration")
+
+        for var_decl in var_decls:
+            # Get variable name(s) for context
+            var_names: list[str] = []
+            for child in var_decl.children:
+                if isinstance(child, Token) and child.type == "IDENTIFIER":
+                    var_names.append(str(child))
+                elif isinstance(child, Tree) and child.data == "type_spec":
+                    break  # Stop at type_spec
+
+            # Find type_spec and extract user-defined types
+            for child in var_decl.children:
+                if isinstance(child, Tree) and child.data == "type_spec":
+                    user_types = self._extract_user_types_from_type_spec(child)
+                    for user_type in user_types:
+                        # Skip if already seen
+                        if user_type in seen_types:
+                            continue
+                        seen_types.add(user_type)
+
+                        # Create import chunk
+                        chunk = self._create_type_reference_import_chunk(
+                            var_decl,
+                            user_type,
+                            var_names,
+                            content,
+                        )
+                        if chunk:
+                            chunks.append(chunk)
+
+        return chunks
+
+    def _extract_user_types_from_type_spec(self, type_spec: Tree) -> list[str]:
+        """Recursively extract user-defined type names from type_spec."""
+        user_types: list[str] = []
+
+        for child in type_spec.children:
+            if isinstance(child, Tree):
+                if child.data == "user_type":
+                    # Direct user type
+                    for token in child.children:
+                        if isinstance(token, Token) and token.type == "IDENTIFIER":
+                            type_name = str(token).upper()
+                            if type_name not in self._PRIMITIVE_TYPES:
+                                user_types.append(str(token))
+                elif child.data in ("array_type", "pointer_type", "reference_type"):
+                    # Recurse into nested type_spec
+                    nested_type_specs = self._find_nodes(child, "type_spec")
+                    for nested in nested_type_specs:
+                        user_types.extend(
+                            self._extract_user_types_from_type_spec(nested)
+                        )
+                elif child.data == "type_spec":
+                    # Direct nested type_spec
+                    user_types.extend(self._extract_user_types_from_type_spec(child))
+
+        return user_types
+
+    def _create_type_reference_import_chunk(
+        self,
+        var_decl: Tree,
+        referenced_type: str,
+        var_names: list[str],
+        content: POUContent,
+    ) -> UniversalChunk | None:
+        """Create import chunk for a user-defined type reference."""
+        # Get line number
+        line = var_decl.meta.line if hasattr(var_decl, "meta") and var_decl.meta else 1
+        adjusted_line = self._adjust_line_number(line, content.declaration_location)
+
+        # Build FQN
+        fqn = f"{content.name}:type_ref:{referenced_type}"
+
+        # Determine usage context
+        var_name = var_names[0] if var_names else "unknown"
+
+        metadata: dict[str, Any] = {
+            "kind": "import",
+            "import_type": "type_reference",
+            "referenced_type": referenced_type,
+            "var_name": var_name,
+            "usage_context": "declaration",
+            "pou_name": content.name,
+            "pou_type": content.pou_type.upper(),
+        }
+
+        return UniversalChunk(
+            concept=UniversalConcept.IMPORT,
+            name=fqn,
+            content=f"type reference: {referenced_type}",
+            start_line=adjusted_line,
+            end_line=adjusted_line,
+            metadata=metadata,
+            language_node_type="lark_type_reference",
+        )
