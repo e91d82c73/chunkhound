@@ -69,6 +69,24 @@ class TwinCATMapping(BaseMapping):
         parser = _get_parser()
         return parser.extract_universal_chunks(content, file_path)
 
+    def extract_imports(
+        self,
+        content: str,
+    ) -> list[UniversalChunk]:
+        """Extract only import chunks from TcPOU content.
+
+        More efficient than extract_universal_chunks() when only
+        imports are needed.
+
+        Args:
+            content: TcPOU XML content string
+
+        Returns:
+            List of UniversalChunk objects representing imports
+        """
+        parser = _get_parser()
+        return parser.extract_import_chunks(content)
+
     # Required abstract method implementations (not used for TwinCAT)
     # These are required by BaseMapping but TwinCAT uses Lark instead of tree-sitter
 
