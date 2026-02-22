@@ -73,9 +73,9 @@ class TwinCATParser:
             grammar_path = self._grammar_dir / "declarations.lark"
             self._decl_parser = Lark.open(
                 str(grammar_path),
-                parser="earley",
+                parser="lalr",
+                lexer="contextual",
                 propagate_positions=True,
-                ambiguity="resolve",
             )
         return self._decl_parser
 
@@ -90,9 +90,9 @@ class TwinCATParser:
             grammar_path = self._grammar_dir / "implementation.lark"
             self._impl_parser = Lark.open(
                 str(grammar_path),
-                parser="earley",
+                parser="lalr",
+                lexer="contextual",
                 propagate_positions=True,
-                ambiguity="resolve",
             )
         return self._impl_parser
 
