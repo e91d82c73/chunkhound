@@ -4314,3 +4314,118 @@ END_VAR
         assert "lark_extends" in node_types
         assert "lark_implements" in node_types
         assert "lark_type_reference" in node_types
+
+
+# =============================================================================
+# Import Resolution Tests
+# =============================================================================
+
+
+class TestTwinCATImportResolution:
+    """Test TwinCAT import path resolution."""
+
+    @pytest.fixture
+    def mapping(self):
+        from chunkhound.parsers.twincat.twincat_mapping import TwinCATMapping
+
+        return TwinCATMapping()
+
+    def test_resolve_direct_symbol(self, tmp_path, mapping):
+        """Test resolving a direct symbol name to .TcPOU file."""
+        motor_file = tmp_path / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("FB_Motor", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
+
+    def test_resolve_var_declaration(self, tmp_path, mapping):
+        """Test resolving type from variable declaration."""
+        motor_file = tmp_path / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("motor : FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
+
+    def test_resolve_extends_keyword(self, tmp_path, mapping):
+        """Test resolving type from EXTENDS clause."""
+        base_file = tmp_path / "FB_Base.TcPOU"
+        base_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("EXTENDS FB_Base", tmp_path, tmp_path / "FB_Child.TcPOU")
+        assert resolved == base_file
+
+    def test_resolve_implements_keyword(self, tmp_path, mapping):
+        """Test resolving type from IMPLEMENTS clause."""
+        interface_file = tmp_path / "I_Runnable.TcPOU"
+        interface_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("IMPLEMENTS I_Runnable", tmp_path, tmp_path / "FB_Motor.TcPOU")
+        assert resolved == interface_file
+
+    def test_resolve_pointer_to_type(self, tmp_path, mapping):
+        """Test resolving type from POINTER TO declaration."""
+        motor_file = tmp_path / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("pMotor : POINTER TO FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
+
+    def test_resolve_reference_to_type(self, tmp_path, mapping):
+        """Test resolving type from REFERENCE TO declaration."""
+        motor_file = tmp_path / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("refMotor : REFERENCE TO FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
+
+    def test_resolve_array_of_type(self, tmp_path, mapping):
+        """Test resolving type from ARRAY OF declaration."""
+        motor_file = tmp_path / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("motors : ARRAY[0..9] OF FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
+
+    def test_resolve_nested_pointer_array(self, tmp_path, mapping):
+        """Test resolving type from nested POINTER TO ARRAY OF declaration."""
+        motor_file = tmp_path / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path(
+            "pMotors : POINTER TO ARRAY[0..9] OF FB_Motor;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == motor_file
+
+    def test_case_insensitive_matching(self, tmp_path, mapping):
+        """Test case-insensitive file matching."""
+        # Create file with different case than symbol
+        motor_file = tmp_path / "fb_motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("FB_MOTOR", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
+
+    def test_primitive_type_returns_none(self, tmp_path, mapping):
+        """Test that IEC 61131-3 primitive types return None."""
+        resolved = mapping.resolve_import_path("value : DINT;", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved is None
+
+    def test_stdlib_type_returns_none(self, tmp_path, mapping):
+        """Test that standard library types (TON, etc.) return None."""
+        resolved = mapping.resolve_import_path("timer : TON;", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved is None
+
+    def test_not_found_returns_none(self, tmp_path, mapping):
+        """Test that non-existent symbols return None."""
+        resolved = mapping.resolve_import_path("FB_NonExistent", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved is None
+
+    def test_searches_subdirectories(self, tmp_path, mapping):
+        """Test that file search includes subdirectories."""
+        lib_dir = tmp_path / "lib" / "motors"
+        lib_dir.mkdir(parents=True)
+        motor_file = lib_dir / "FB_Motor.TcPOU"
+        motor_file.write_text("<xml/>")
+
+        resolved = mapping.resolve_import_path("FB_Motor", tmp_path, tmp_path / "Main.TcPOU")
+        assert resolved == motor_file
