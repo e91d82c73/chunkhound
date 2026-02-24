@@ -214,7 +214,8 @@ class TwinCATParser:
         import_chunks = self._extract_import_universal_chunks_from_pou(content)
         chunks.extend(import_chunks)
 
-        return chunks
+        # Stable sort: by start line, then larger spans first (containers before contents)
+        return sorted(chunks, key=lambda c: (c.start_line, -c.end_line))
 
     def _map_chunk_type_to_concept(self, chunk_type: ChunkType) -> UniversalConcept:
         """Map TwinCAT ChunkType to UniversalConcept.
