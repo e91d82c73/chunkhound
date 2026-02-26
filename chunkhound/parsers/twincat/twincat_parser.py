@@ -46,6 +46,52 @@ VAR_BLOCK_MAP = {
 }
 
 
+def join_content_preserving_lines(
+    content1: str | None,
+    start1: SourceLocation | None,
+    content2: str | None,
+    start2: SourceLocation | None,
+) -> str:
+    """Join two code sections preserving source file line numbers.
+
+    Calculates the correct number of newlines needed between content1 and content2
+    based on their actual positions in the source file.
+
+    Args:
+        content1: First content section (e.g., declaration)
+        start1: Start location of content1
+        content2: Second content section (e.g., implementation)
+        start2: Start location of content2
+
+    Returns:
+        Combined content with appropriate newline separator
+    """
+    # Handle empty content cases
+    if not content1 or not content1.strip():
+        return content2 or ""
+    if not content2 or not content2.strip():
+        return content1
+
+    # If locations are missing, use default separator for backward compatibility
+    if start1 is None or start2 is None:
+        return content1 + "\n\n" + content2
+
+    # Calculate end line of content1
+    content1_end_line = start1.line + content1.count("\n")
+
+    # Calculate gap between content1 end and content2 start
+    gap = start2.line - content1_end_line
+
+    if gap <= 0:
+        # No gap or overlapping: use single space
+        separator = " "
+    else:
+        # Use exact number of newlines to preserve line numbers
+        separator = "\n" * gap
+
+    return content1 + separator + content2
+
+
 class TwinCATParser:
     """Parser for TwinCAT TcPOU files.
 
@@ -119,12 +165,13 @@ class TwinCATParser:
             List of UniversalChunk objects
         """
         pou_content = self._extractor.extract_string(content)
-        return self._process_pou_content_to_universal(pou_content, file_path)
+        return self._process_pou_content_to_universal(pou_content, file_path, content)
 
     def _process_pou_content_to_universal(
         self,
         content: POUContent,
         file_path: Path | None,
+        raw_content: str,
     ) -> list[UniversalChunk]:
         """Process extracted POU content into UniversalChunk objects."""
         self._parse_errors = []  # Clear errors at start of each parse
@@ -148,7 +195,6 @@ class TwinCATParser:
                 logger.error(error_msg)
                 self._parse_errors.append(error_msg)
 
-        # 3. Parse implementation for control flow blocks (all POU types)
         if content.implementation and content.implementation.strip():
             block_chunks = self._extract_block_universal_chunks_from_implementation(
                 content.implementation,
@@ -159,7 +205,7 @@ class TwinCATParser:
             )
             chunks.extend(block_chunks)
 
-        # 4. Extract comments from declaration and implementation
+        # 3. Extract comments from declaration and implementation
         decl_base_line = (
             content.declaration_location.line if content.declaration_location else 1
         )
@@ -189,33 +235,37 @@ class TwinCATParser:
             )
             chunks.extend(comment_chunks)
 
-        # 5. Parse actions → create action chunks
+        # 4. Parse actions → create action chunks
         for action in content.actions:
             action_chunks = self._extract_action_universal_chunks(
                 action, content, file_path
             )
             chunks.extend(action_chunks)
 
-        # 6. Parse methods → create method chunks
+        # 5. Parse methods → create method chunks
         for method in content.methods:
             method_chunks = self._extract_method_universal_chunks(
                 method, content, file_path
             )
             chunks.extend(method_chunks)
 
-        # 7. Parse properties → create property chunks
+        # 6. Parse properties → create property chunks
         for prop in content.properties:
             property_chunks = self._extract_property_universal_chunks(
                 prop, content, file_path
             )
             chunks.extend(property_chunks)
 
-        # 8. Extract imports (VAR_EXTERNAL, EXTENDS, IMPLEMENTS, type references)
+        # 7. Extract imports (VAR_EXTERNAL, EXTENDS, IMPLEMENTS, type references)
         import_chunks = self._extract_import_universal_chunks_from_pou(content)
         chunks.extend(import_chunks)
 
+        # Validate chunk positions against raw file content
+        self._validate_chunk_positions(chunks, raw_content)
+
         # Stable sort: by start line, then larger spans first (containers before contents)
         return sorted(chunks, key=lambda c: (c.start_line, -c.end_line))
+
 
     def _map_chunk_type_to_concept(self, chunk_type: ChunkType) -> UniversalConcept:
         """Map TwinCAT ChunkType to UniversalConcept.
@@ -292,9 +342,12 @@ class TwinCATParser:
     ) -> UniversalChunk | None:
         """Create UniversalChunk for the main POU."""
         # Combine declaration + implementation as the POU code
-        combined_code = content.declaration
-        if content.implementation and content.implementation.strip():
-            combined_code += "\n\n" + content.implementation
+        combined_code = join_content_preserving_lines(
+            content.declaration,
+            content.declaration_location,
+            content.implementation,
+            content.implementation_location,
+        )
 
         if not combined_code.strip():
             return None
@@ -492,15 +545,13 @@ class TwinCATParser:
         """Create UniversalChunks for an action."""
         chunks: list[UniversalChunk] = []
 
-        # Combine action declaration and implementation
-        action_code = ""
-        if action.declaration:
-            action_code = action.declaration
-
-        if action.implementation and action.implementation.strip():
-            if action_code:
-                action_code += "\n\n"
-            action_code += action.implementation
+        # Combine action declaration and implementation with line-preserving join
+        action_code = join_content_preserving_lines(
+            action.declaration,
+            action.declaration_location,
+            action.implementation if action.implementation and action.implementation.strip() else None,
+            action.implementation_location,
+        )
 
         if not action_code.strip():
             return chunks
@@ -512,7 +563,13 @@ class TwinCATParser:
         elif action.implementation_location:
             start_line = action.implementation_location.line
 
-        end_line = start_line + action_code.count("\n")
+        # Calculate end_line from individual section locations (not combined code)
+        if action.implementation and action.implementation.strip() and action.implementation_location:
+            end_line = action.implementation_location.line + action.implementation.count("\n")
+        elif action.declaration and action.declaration_location:
+            end_line = action.declaration_location.line + action.declaration.count("\n")
+        else:
+            end_line = start_line
 
         # Create the main ACTION chunk
         metadata = {
@@ -606,12 +663,13 @@ class TwinCATParser:
         """Create UniversalChunks for a method."""
         chunks: list[UniversalChunk] = []
 
-        # Combine method declaration and implementation
-        method_code = method.declaration
-        if method.implementation and method.implementation.strip():
-            if method_code:
-                method_code += "\n\n"
-            method_code += method.implementation
+        # Combine method declaration and implementation with line-preserving join
+        method_code = join_content_preserving_lines(
+            method.declaration,
+            method.declaration_location,
+            method.implementation if method.implementation and method.implementation.strip() else None,
+            method.implementation_location,
+        )
 
         if not method_code.strip():
             return chunks
@@ -623,7 +681,13 @@ class TwinCATParser:
         elif method.implementation_location:
             start_line = method.implementation_location.line
 
-        end_line = start_line + method_code.count("\n")
+        # Calculate end_line from individual section locations (not combined code)
+        if method.implementation and method.implementation.strip() and method.implementation_location:
+            end_line = method.implementation_location.line + method.implementation.count("\n")
+        elif method.declaration and method.declaration_location:
+            end_line = method.declaration_location.line + method.declaration.count("\n")
+        else:
+            end_line = start_line
 
         # Create the main METHOD chunk
         metadata = {
@@ -717,18 +781,37 @@ class TwinCATParser:
         """Create UniversalChunks for a property."""
         chunks: list[UniversalChunk] = []
 
-        # Combine property declaration and accessor implementations
-        property_code = prop.declaration
-
+        # Combine property declaration and accessor implementations with line-preserving join
+        # Use inline ST-style comments (* GET *) and (* SET *) that don't affect line numbers
+        get_content = None
+        get_location = None
         if prop.get and prop.get.implementation and prop.get.implementation.strip():
-            if property_code:
-                property_code += "\n\n// GET\n"
-            property_code += prop.get.implementation
+            get_content = f"(* GET *) {prop.get.implementation}"
+            get_location = prop.get.implementation_location
 
+        property_code = join_content_preserving_lines(
+            prop.declaration,
+            prop.declaration_location,
+            get_content,
+            get_location,
+        )
+
+        # Chain for SET if present
         if prop.set and prop.set.implementation and prop.set.implementation.strip():
-            if property_code:
-                property_code += "\n\n// SET\n"
-            property_code += prop.set.implementation
+            set_content = f"(* SET *) {prop.set.implementation}"
+            # Determine previous content's end location for proper gap calculation
+            prev_location: SourceLocation | None
+            if get_content and get_location:
+                prev_location = get_location
+            else:
+                prev_location = prop.declaration_location
+
+            property_code = join_content_preserving_lines(
+                property_code,
+                prev_location,
+                set_content,
+                prop.set.implementation_location,
+            )
 
         if not property_code.strip():
             return chunks
@@ -737,7 +820,19 @@ class TwinCATParser:
         start_line = 1
         if prop.declaration_location:
             start_line = prop.declaration_location.line
-        end_line = start_line + property_code.count("\n")
+
+        # Calculate end_line from individual section locations (not combined code)
+        # Start with declaration end
+        if prop.declaration and prop.declaration_location:
+            end_line = prop.declaration_location.line + prop.declaration.count("\n")
+        else:
+            end_line = start_line
+
+        # Extend to accessor locations if they exist
+        if prop.get and prop.get.implementation and prop.get.implementation.strip() and prop.get.implementation_location:
+            end_line = max(end_line, prop.get.implementation_location.line + prop.get.implementation.count("\n"))
+        if prop.set and prop.set.implementation and prop.set.implementation.strip() and prop.set.implementation_location:
+            end_line = max(end_line, prop.set.implementation_location.line + prop.set.implementation.count("\n"))
 
         # Create the main PROPERTY chunk
         metadata = {
@@ -1063,6 +1158,89 @@ class TwinCATParser:
         if location is None:
             return line
         return line + (location.line - 1)
+
+    def _validate_chunk_positions(
+        self,
+        chunks: list[UniversalChunk],
+        raw_content: str,
+    ) -> None:
+        """Validate that chunk line numbers match the source file.
+
+        For each chunk, verifies that:
+        - The first line of chunk content is a substring of file's start_line
+        - The last line of chunk content is a substring of file's end_line
+
+        Logs warnings for mismatches but does not modify or filter chunks.
+
+        Args:
+            chunks: List of UniversalChunk objects to validate
+            raw_content: The raw TcPOU XML file content
+        """
+        file_lines = raw_content.splitlines()
+
+        for chunk in chunks:
+            # Skip validation for synthesized content that won't match source lines
+            if chunk.language_node_type in ("lark_var_declaration", "lark_type_reference"):
+                continue
+
+            chunk_lines = chunk.content.splitlines()
+            if not chunk_lines:
+                continue
+
+            # Get first and last content lines (stripped for comparison)
+            first_content_line = chunk_lines[0].strip()
+            last_content_line = chunk_lines[-1].strip()
+
+            # Convert 1-based line numbers to 0-based array indices
+            # start_line=1 means first line of file, which is index 0
+            start_idx = chunk.start_line - 1
+            end_idx = chunk.end_line - 1
+
+            # Bounds check
+            if start_idx < 0 or start_idx >= len(file_lines):
+                logger.warning(
+                    f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
+                    f"start_line {chunk.start_line} out of bounds (file has {len(file_lines)} lines)"
+                )
+                continue
+            if end_idx < 0 or end_idx >= len(file_lines):
+                logger.warning(
+                    f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
+                    f"end_line {chunk.end_line} out of bounds (file has {len(file_lines)} lines)"
+                )
+                continue
+
+            file_start_line = file_lines[start_idx]
+            file_end_line = file_lines[end_idx]
+
+            # Validate first line
+            if first_content_line and first_content_line not in file_start_line:
+                logger.warning(
+                    f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
+                    f"first line mismatch at line {chunk.start_line}:\n"
+                    f"  Expected substring: {first_content_line!r}\n"
+                    f"  File line: {file_start_line!r}"
+                )
+
+            # Validate last line - check end_line or end_line-1 (off-by-one tolerance)
+            if last_content_line:
+                found_at_end = last_content_line in file_end_line
+                found_at_prev = False
+                if not found_at_end and end_idx - 1 >= 0:
+                    found_at_prev = last_content_line in file_lines[end_idx - 1]
+
+                if not found_at_end and not found_at_prev:
+                    # Build warning message with context lines
+                    msg = (
+                        f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
+                        f"last line mismatch at line {chunk.end_line}:\n"
+                        f"  Expected: {last_content_line!r}"
+                    )
+                    if end_idx - 1 >= 0:
+                        msg += f"\n  Line {chunk.end_line - 1}: {file_lines[end_idx - 1]!r}"
+                    msg += f"\n  Line {chunk.end_line}: {file_end_line!r}"
+
+                    logger.warning(msg)
 
     @staticmethod
     def _build_fqn(
