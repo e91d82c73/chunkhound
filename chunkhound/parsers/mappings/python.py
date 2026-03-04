@@ -896,7 +896,7 @@ class PythonMapping(BaseMapping):
         for suffix in [".py", "/__init__.py"]:
             full_path = base_dir / (module.replace(".", "/") + suffix)
             if full_path.exists():
-                return full_path
+                return full_path.resolve()
         return None
 
     def _parse_import_names(self, imports_part: str) -> list[str]:
