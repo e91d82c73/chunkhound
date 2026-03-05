@@ -46,52 +46,6 @@ VAR_BLOCK_MAP = {
 }
 
 
-def join_content_preserving_lines(
-    content1: str | None,
-    start1: SourceLocation | None,
-    content2: str | None,
-    start2: SourceLocation | None,
-) -> str:
-    """Join two code sections preserving source file line numbers.
-
-    Calculates the correct number of newlines needed between content1 and content2
-    based on their actual positions in the source file.
-
-    Args:
-        content1: First content section (e.g., declaration)
-        start1: Start location of content1
-        content2: Second content section (e.g., implementation)
-        start2: Start location of content2
-
-    Returns:
-        Combined content with appropriate newline separator
-    """
-    # Handle empty content cases
-    if not content1 or not content1.strip():
-        return content2 or ""
-    if not content2 or not content2.strip():
-        return content1
-
-    # If locations are missing, use default separator for backward compatibility
-    if start1 is None or start2 is None:
-        return content1 + "\n\n" + content2
-
-    # Calculate end line of content1
-    content1_end_line = start1.line + content1.count("\n")
-
-    # Calculate gap between content1 end and content2 start
-    gap = start2.line - content1_end_line
-
-    if gap <= 0:
-        # No gap or overlapping: use single space
-        separator = " "
-    else:
-        # Use exact number of newlines to preserve line numbers
-        separator = "\n" * gap
-
-    return content1 + separator + content2
-
-
 class TwinCATParser:
     """Parser for TwinCAT TcPOU files.
 
@@ -177,10 +131,9 @@ class TwinCATParser:
         self._parse_errors = []  # Clear errors at start of each parse
         chunks: list[UniversalChunk] = []
 
-        # 1. Create main POU chunk (the whole PROGRAM/FUNCTION_BLOCK/FUNCTION)
-        pou_chunk = self._create_pou_universal_chunk(content, file_path)
-        if pou_chunk:
-            chunks.append(pou_chunk)
+        # 1. Create POU declaration and implementation chunks
+        pou_chunks = self._create_pou_universal_chunks(content, file_path)
+        chunks.extend(pou_chunks)
 
         # 2. Parse declaration section → extract variable chunks
         if content.declaration and content.declaration.strip():
@@ -263,7 +216,7 @@ class TwinCATParser:
         # Validate chunk positions against raw file content
         self._validate_chunk_positions(chunks, raw_content)
 
-        # Stable sort: by start line, then larger spans first (containers before contents)
+        # Stable sort: by start line, then larger spans first (containers first)
         return sorted(chunks, key=lambda c: (c.start_line, -c.end_line))
 
 
@@ -335,29 +288,63 @@ class TwinCATParser:
             language_node_type=language_node_type,
         )
 
-    def _create_pou_universal_chunk(
+    def _create_cdata_chunk(
+        self,
+        content: str | None,
+        location: SourceLocation | None,
+        name_suffix: str,
+        base_name: str,
+        chunk_type: ChunkType,
+        base_metadata: dict[str, Any],
+        language_node_type: str,
+    ) -> UniversalChunk | None:
+        """Create UniversalChunk for a single CDATA section.
+
+        Args:
+            content: The CDATA content (declaration or implementation)
+            location: Source location of the CDATA section
+            name_suffix: Section type ("declaration", "implementation", "get", "set")
+            base_name: Base FQN name (e.g., "FB_Test" or "FB_Test.Method1")
+            chunk_type: The ChunkType for this chunk
+            base_metadata: Base metadata dict to extend
+            language_node_type: Original node type for the chunk
+
+        Returns:
+            UniversalChunk if content is non-empty, None otherwise
+        """
+        if not content or not content.strip():
+            return None
+
+        # Calculate line numbers
+        start_line = location.line if location else 1
+        end_line = start_line + content.count("\n")
+
+        # Build FQN with section suffix
+        fqn = f"{base_name}.{name_suffix}"
+
+        # Extend metadata with section info
+        metadata = {
+            **base_metadata,
+            "section": name_suffix,
+        }
+
+        return self._create_universal_chunk(
+            chunk_type=chunk_type,
+            name=fqn,
+            content=content,
+            start_line=start_line,
+            end_line=end_line,
+            metadata=metadata,
+            language_node_type=language_node_type,
+        )
+
+    def _create_pou_universal_chunks(
         self,
         content: POUContent,
         file_path: Path | None,
-    ) -> UniversalChunk | None:
-        """Create UniversalChunk for the main POU."""
-        # Combine declaration + implementation as the POU code
-        combined_code = join_content_preserving_lines(
-            content.declaration,
-            content.declaration_location,
-            content.implementation,
-            content.implementation_location,
-        )
-
-        if not combined_code.strip():
-            return None
-
-        # Use XML locations for accurate line numbers
-        start_line = 1
-        if content.declaration_location:
-            start_line = content.declaration_location.line
-
-        end_line = start_line + combined_code.count("\n")
+    ) -> list[UniversalChunk]:
+        """Create UniversalChunks for POU declaration and implementation sections."""
+        chunks: list[UniversalChunk] = []
 
         # Map POU type to ChunkType
         pou_type = content.pou_type.upper()
@@ -370,22 +357,40 @@ class TwinCATParser:
         else:
             chunk_type = ChunkType.BLOCK
 
-        metadata = {
+        base_metadata = {
             "kind": pou_type.lower(),
             "pou_type": pou_type,
             "pou_name": content.name,
             "pou_id": content.id,
         }
 
-        return self._create_universal_chunk(
+        # Create declaration chunk
+        decl_chunk = self._create_cdata_chunk(
+            content=content.declaration,
+            location=content.declaration_location,
+            name_suffix="declaration",
+            base_name=content.name,
             chunk_type=chunk_type,
-            name=content.name,
-            content=combined_code,
-            start_line=start_line,
-            end_line=end_line,
-            metadata=metadata,
-            language_node_type="lark_pou",
+            base_metadata=base_metadata,
+            language_node_type="lark_pou_declaration",
         )
+        if decl_chunk:
+            chunks.append(decl_chunk)
+
+        # Create implementation chunk
+        impl_chunk = self._create_cdata_chunk(
+            content=content.implementation,
+            location=content.implementation_location,
+            name_suffix="implementation",
+            base_name=content.name,
+            chunk_type=chunk_type,
+            base_metadata=base_metadata,
+            language_node_type="lark_pou_implementation",
+        )
+        if impl_chunk:
+            chunks.append(impl_chunk)
+
+        return chunks
 
     def _extract_var_universal_chunks_from_tree(
         self,
@@ -542,53 +547,49 @@ class TwinCATParser:
         content: POUContent,
         file_path: Path | None,
     ) -> list[UniversalChunk]:
-        """Create UniversalChunks for an action."""
+        """Create UniversalChunks for action declaration and implementation sections."""
         chunks: list[UniversalChunk] = []
 
-        # Combine action declaration and implementation with line-preserving join
-        action_code = join_content_preserving_lines(
-            action.declaration,
-            action.declaration_location,
-            action.implementation if action.implementation and action.implementation.strip() else None,
-            action.implementation_location,
-        )
-
-        if not action_code.strip():
-            return chunks
-
-        # Use action's declaration location for start_line
-        start_line = 1
-        if action.declaration_location:
-            start_line = action.declaration_location.line
-        elif action.implementation_location:
-            start_line = action.implementation_location.line
-
-        # Calculate end_line from individual section locations (not combined code)
-        if action.implementation and action.implementation.strip() and action.implementation_location:
-            end_line = action.implementation_location.line + action.implementation.count("\n")
-        elif action.declaration and action.declaration_location:
-            end_line = action.declaration_location.line + action.declaration.count("\n")
-        else:
-            end_line = start_line
-
-        # Create the main ACTION chunk
-        metadata = {
+        # Base metadata for action chunks
+        base_metadata = {
             "kind": "action",
             "pou_type": content.pou_type,
             "pou_name": content.name,
             "action_id": action.id,
         }
 
-        chunk = self._create_universal_chunk(
+        base_name = f"{content.name}.{action.name}"
+
+        # Create declaration chunk (only if declaration exists)
+        if action.declaration and action.declaration.strip():
+            decl_chunk = self._create_cdata_chunk(
+                content=action.declaration,
+                location=action.declaration_location,
+                name_suffix="declaration",
+                base_name=base_name,
+                chunk_type=ChunkType.ACTION,
+                base_metadata=base_metadata,
+                language_node_type="lark_action_declaration",
+            )
+            if decl_chunk:
+                chunks.append(decl_chunk)
+
+        # Create implementation chunk
+        impl_chunk = self._create_cdata_chunk(
+            content=action.implementation,
+            location=action.implementation_location,
+            name_suffix="implementation",
+            base_name=base_name,
             chunk_type=ChunkType.ACTION,
-            name=f"{content.name}.{action.name}",
-            content=action_code,
-            start_line=start_line,
-            end_line=end_line,
-            metadata=metadata,
-            language_node_type="lark_action",
+            base_metadata=base_metadata,
+            language_node_type="lark_action_implementation",
         )
-        chunks.append(chunk)
+        if impl_chunk:
+            chunks.append(impl_chunk)
+
+        # Skip further processing if no chunks created
+        if not chunks:
+            return chunks
 
         # Parse action declaration for variables
         if action.declaration and action.declaration.strip():
@@ -660,53 +661,48 @@ class TwinCATParser:
         content: POUContent,
         file_path: Path | None,
     ) -> list[UniversalChunk]:
-        """Create UniversalChunks for a method."""
+        """Create UniversalChunks for method declaration and implementation sections."""
         chunks: list[UniversalChunk] = []
 
-        # Combine method declaration and implementation with line-preserving join
-        method_code = join_content_preserving_lines(
-            method.declaration,
-            method.declaration_location,
-            method.implementation if method.implementation and method.implementation.strip() else None,
-            method.implementation_location,
-        )
-
-        if not method_code.strip():
-            return chunks
-
-        # Use method's declaration location for start_line
-        start_line = 1
-        if method.declaration_location:
-            start_line = method.declaration_location.line
-        elif method.implementation_location:
-            start_line = method.implementation_location.line
-
-        # Calculate end_line from individual section locations (not combined code)
-        if method.implementation and method.implementation.strip() and method.implementation_location:
-            end_line = method.implementation_location.line + method.implementation.count("\n")
-        elif method.declaration and method.declaration_location:
-            end_line = method.declaration_location.line + method.declaration.count("\n")
-        else:
-            end_line = start_line
-
-        # Create the main METHOD chunk
-        metadata = {
+        # Base metadata for method chunks
+        base_metadata = {
             "kind": "method",
             "pou_type": content.pou_type,
             "pou_name": content.name,
             "method_id": method.id,
         }
 
-        chunk = self._create_universal_chunk(
+        base_name = f"{content.name}.{method.name}"
+
+        # Create declaration chunk
+        decl_chunk = self._create_cdata_chunk(
+            content=method.declaration,
+            location=method.declaration_location,
+            name_suffix="declaration",
+            base_name=base_name,
             chunk_type=ChunkType.METHOD,
-            name=f"{content.name}.{method.name}",
-            content=method_code,
-            start_line=start_line,
-            end_line=end_line,
-            metadata=metadata,
-            language_node_type="lark_method",
+            base_metadata=base_metadata,
+            language_node_type="lark_method_declaration",
         )
-        chunks.append(chunk)
+        if decl_chunk:
+            chunks.append(decl_chunk)
+
+        # Create implementation chunk
+        impl_chunk = self._create_cdata_chunk(
+            content=method.implementation,
+            location=method.implementation_location,
+            name_suffix="implementation",
+            base_name=base_name,
+            chunk_type=ChunkType.METHOD,
+            base_metadata=base_metadata,
+            language_node_type="lark_method_implementation",
+        )
+        if impl_chunk:
+            chunks.append(impl_chunk)
+
+        # Skip further processing if no chunks created
+        if not chunks:
+            return chunks
 
         # Parse method declaration for variables
         if method.declaration and method.declaration.strip():
@@ -778,82 +774,59 @@ class TwinCATParser:
         content: POUContent,
         file_path: Path | None,
     ) -> list[UniversalChunk]:
-        """Create UniversalChunks for a property."""
+        """Create UniversalChunks for a property's declaration and accessor sections."""
         chunks: list[UniversalChunk] = []
 
-        # Combine property declaration and accessor implementations with line-preserving join
-        # Use inline ST-style comments (* GET *) and (* SET *) that don't affect line numbers
-        get_content = None
-        get_location = None
-        if prop.get and prop.get.implementation and prop.get.implementation.strip():
-            get_content = f"(* GET *) {prop.get.implementation}"
-            get_location = prop.get.implementation_location
-
-        property_code = join_content_preserving_lines(
-            prop.declaration,
-            prop.declaration_location,
-            get_content,
-            get_location,
-        )
-
-        # Chain for SET if present
-        if prop.set and prop.set.implementation and prop.set.implementation.strip():
-            set_content = f"(* SET *) {prop.set.implementation}"
-            # Determine previous content's end location for proper gap calculation
-            prev_location: SourceLocation | None
-            if get_content and get_location:
-                prev_location = get_location
-            else:
-                prev_location = prop.declaration_location
-
-            property_code = join_content_preserving_lines(
-                property_code,
-                prev_location,
-                set_content,
-                prop.set.implementation_location,
-            )
-
-        if not property_code.strip():
-            return chunks
-
-        # Calculate start_line from property declaration location
-        start_line = 1
-        if prop.declaration_location:
-            start_line = prop.declaration_location.line
-
-        # Calculate end_line from individual section locations (not combined code)
-        # Start with declaration end
-        if prop.declaration and prop.declaration_location:
-            end_line = prop.declaration_location.line + prop.declaration.count("\n")
-        else:
-            end_line = start_line
-
-        # Extend to accessor locations if they exist
-        if prop.get and prop.get.implementation and prop.get.implementation.strip() and prop.get.implementation_location:
-            end_line = max(end_line, prop.get.implementation_location.line + prop.get.implementation.count("\n"))
-        if prop.set and prop.set.implementation and prop.set.implementation.strip() and prop.set.implementation_location:
-            end_line = max(end_line, prop.set.implementation_location.line + prop.set.implementation.count("\n"))
-
-        # Create the main PROPERTY chunk
-        metadata = {
+        # Base metadata for property chunks
+        base_metadata = {
             "kind": "property",
             "pou_type": content.pou_type,
             "pou_name": content.name,
             "property_id": prop.id,
-            "has_get": prop.get is not None,
-            "has_set": prop.set is not None,
         }
 
-        chunk = self._create_universal_chunk(
+        base_name = f"{content.name}.{prop.name}"
+
+        # Create declaration chunk
+        decl_chunk = self._create_cdata_chunk(
+            content=prop.declaration,
+            location=prop.declaration_location,
+            name_suffix="declaration",
+            base_name=base_name,
             chunk_type=ChunkType.PROPERTY,
-            name=f"{content.name}.{prop.name}",
-            content=property_code,
-            start_line=start_line,
-            end_line=end_line,
-            metadata=metadata,
-            language_node_type="lark_property",
+            base_metadata=base_metadata,
+            language_node_type="lark_property_declaration",
         )
-        chunks.append(chunk)
+        if decl_chunk:
+            chunks.append(decl_chunk)
+
+        # Create get accessor chunk
+        if prop.get and prop.get.implementation and prop.get.implementation.strip():
+            get_chunk = self._create_cdata_chunk(
+                content=prop.get.implementation,
+                location=prop.get.implementation_location,
+                name_suffix="get",
+                base_name=base_name,
+                chunk_type=ChunkType.PROPERTY,
+                base_metadata=base_metadata,
+                language_node_type="lark_property_get",
+            )
+            if get_chunk:
+                chunks.append(get_chunk)
+
+        # Create set accessor chunk
+        if prop.set and prop.set.implementation and prop.set.implementation.strip():
+            set_chunk = self._create_cdata_chunk(
+                content=prop.set.implementation,
+                location=prop.set.implementation_location,
+                name_suffix="set",
+                base_name=base_name,
+                chunk_type=ChunkType.PROPERTY,
+                base_metadata=base_metadata,
+                language_node_type="lark_property_set",
+            )
+            if set_chunk:
+                chunks.append(set_chunk)
 
         return chunks
 
@@ -1179,8 +1152,9 @@ class TwinCATParser:
         file_lines = raw_content.splitlines()
 
         for chunk in chunks:
-            # Skip validation for synthesized content that won't match source lines
-            if chunk.language_node_type in ("lark_var_declaration", "lark_type_reference"):
+            # Skip validation for synthesized content that won't match source
+            skip_types = ("lark_var_declaration", "lark_type_reference")
+            if chunk.language_node_type in skip_types:
                 continue
 
             chunk_lines = chunk.content.splitlines()
@@ -1197,16 +1171,17 @@ class TwinCATParser:
             end_idx = chunk.end_line - 1
 
             # Bounds check
+            chunk_info = f"{chunk.name} ({chunk.concept.value})"
             if start_idx < 0 or start_idx >= len(file_lines):
                 logger.warning(
-                    f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
-                    f"start_line {chunk.start_line} out of bounds (file has {len(file_lines)} lines)"
+                    f"Chunk {chunk_info} start_line {chunk.start_line} "
+                    f"out of bounds (file has {len(file_lines)} lines)"
                 )
                 continue
             if end_idx < 0 or end_idx >= len(file_lines):
                 logger.warning(
-                    f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
-                    f"end_line {chunk.end_line} out of bounds (file has {len(file_lines)} lines)"
+                    f"Chunk {chunk_info} end_line {chunk.end_line} "
+                    f"out of bounds (file has {len(file_lines)} lines)"
                 )
                 continue
 
@@ -1216,13 +1191,12 @@ class TwinCATParser:
             # Validate first line
             if first_content_line and first_content_line not in file_start_line:
                 logger.warning(
-                    f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
-                    f"first line mismatch at line {chunk.start_line}:\n"
-                    f"  Expected substring: {first_content_line!r}\n"
-                    f"  File line: {file_start_line!r}"
+                    f"Chunk {chunk_info} first line mismatch at {chunk.start_line}:\n"
+                    f"  Expected: {first_content_line!r}\n"
+                    f"  File: {file_start_line!r}"
                 )
 
-            # Validate last line - check end_line or end_line-1 (off-by-one tolerance)
+            # Validate last line (with off-by-one tolerance)
             if last_content_line:
                 found_at_end = last_content_line in file_end_line
                 found_at_prev = False
@@ -1230,14 +1204,13 @@ class TwinCATParser:
                     found_at_prev = last_content_line in file_lines[end_idx - 1]
 
                 if not found_at_end and not found_at_prev:
-                    # Build warning message with context lines
                     msg = (
-                        f"Chunk '{chunk.name}' ({chunk.concept.value}, {chunk.language_node_type}) "
-                        f"last line mismatch at line {chunk.end_line}:\n"
+                        f"Chunk {chunk_info} last line mismatch at {chunk.end_line}:\n"
                         f"  Expected: {last_content_line!r}"
                     )
                     if end_idx - 1 >= 0:
-                        msg += f"\n  Line {chunk.end_line - 1}: {file_lines[end_idx - 1]!r}"
+                        prev_line = file_lines[end_idx - 1]
+                        msg += f"\n  Line {chunk.end_line - 1}: {prev_line!r}"
                     msg += f"\n  Line {chunk.end_line}: {file_end_line!r}"
 
                     logger.warning(msg)
