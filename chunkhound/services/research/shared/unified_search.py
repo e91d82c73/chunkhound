@@ -191,6 +191,10 @@ class UnifiedSearch:
                 f"searches -> {len(semantic_results)} unique chunks"
             )
 
+            # Log size of semantic results
+            semantic_chars = sum(len(get_chunk_text(c)) for c in semantic_results)
+            logger.info(f"[SIZE] Semantic results ({len(semantic_results)}): {semantic_chars:,} chars")
+
             # Emit search results event
             await emit_event(
                 "search_semantic",
@@ -321,6 +325,10 @@ class UnifiedSearch:
                         exclude_ids=semantic_chunk_ids,
                     )
 
+                    # Log size of regex results
+                    regex_chars = sum(len(get_chunk_text(c)) for c in regex_results)
+                    logger.info(f"[SIZE] Regex results ({len(regex_results)}): {regex_chars:,} chars")
+
                     # Emit regex search results
                     await emit_event(
                         "search_regex_complete",
@@ -351,6 +359,10 @@ class UnifiedSearch:
 
         combined_pool = list(unified_map.values())
         logger.debug(f"Unified to {len(combined_pool)} unique chunks")
+
+        # Log size of unified results
+        unified_chars = sum(len(get_chunk_text(c)) for c in combined_pool)
+        logger.info(f"[SIZE] Unified results ({len(combined_pool)}): {unified_chars:,} chars")
 
         # Step 7: Unified rerank against ROOT query (or compound queries)
         # Reranks semantic + regex results TOGETHER for optimal ranking

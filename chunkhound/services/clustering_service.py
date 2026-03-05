@@ -75,10 +75,13 @@ class ClusteringService:
             self._llm_provider.estimate_tokens(content) for content in files.values()
         )
 
+        # Log total chars being clustered
+        total_chars = sum(len(content) for content in files.values())
         logger.info(
             f"K-means clustering {len(files)} files ({total_tokens:,} tokens) "
             f"into {n_clusters} clusters"
         )
+        logger.info(f"[SIZE] K-means input ({len(files)} files): {total_chars:,} chars")
 
         # Special case: single cluster requested or single file
         if n_clusters == 1 or len(files) == 1:
@@ -132,9 +135,17 @@ class ClusteringService:
             )
             cluster_groups.append(cluster_group)
 
+            # Log per-cluster size
+            cluster_chars = sum(
+                len(content) for content in cluster_files_content.values()
+            )
             logger.debug(
                 f"Cluster {cluster_id}: {len(cluster_file_paths)} files, "
                 f"{cluster_tokens:,} tokens"
+            )
+            logger.info(
+                f"[SIZE] K-means cluster {cluster_id} "
+                f"({len(cluster_file_paths)} files): {cluster_chars:,} chars"
             )
 
         avg_tokens = total_tokens / len(cluster_groups) if cluster_groups else 0
@@ -187,9 +198,12 @@ class ClusteringService:
             self._llm_provider.estimate_tokens(content) for content in files.values()
         )
 
+        # Log total chars being clustered
+        total_chars = sum(len(content) for content in files.values())
         logger.info(
             f"HDBSCAN clustering {len(files)} files ({total_tokens:,} tokens)"
         )
+        logger.info(f"[SIZE] HDBSCAN input ({len(files)} files): {total_chars:,} chars")
 
         # Special case: single file
         if len(files) == 1:
@@ -270,9 +284,17 @@ class ClusteringService:
             )
             cluster_groups.append(cluster_group)
 
+            # Log per-cluster size
+            cluster_chars = sum(
+                len(content) for content in cluster_files_content.values()
+            )
             logger.debug(
                 f"Cluster {cluster_id}: {len(cluster_file_paths)} files, "
                 f"{cluster_tokens:,} tokens"
+            )
+            logger.info(
+                f"[SIZE] HDBSCAN cluster {cluster_id} "
+                f"({len(cluster_file_paths)} files): {cluster_chars:,} chars"
             )
 
         avg_tokens = total_tokens / len(cluster_groups) if cluster_groups else 0

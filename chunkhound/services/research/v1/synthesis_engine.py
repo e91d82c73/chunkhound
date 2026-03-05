@@ -107,10 +107,13 @@ class SynthesisEngine:
             "chunks_count": len(chunks),
         }
 
+        # Log size of files for synthesis
+        total_chars = sum(len(content) for content in files.values())
         logger.info(
             f"Synthesis input: {len(files)} files, {len(chunks)} chunks, "
             f"{total_tokens:,} tokens"
         )
+        logger.info(f"[SIZE] Synthesis input files ({len(files)}): {total_chars:,} chars")
 
         return chunks, files, selection_info
 
@@ -223,6 +226,9 @@ class SynthesisEngine:
 
         code_context = "\n\n".join(code_sections)
 
+        # Log size of code context
+        logger.info(f"[SIZE] Single-pass code context: {len(code_context):,} chars")
+
         # Build file reference map for numbered citations
         file_reference_map = self._parent._citation_manager.build_file_reference_map(
             budgeted_chunks, files
@@ -255,6 +261,9 @@ class SynthesisEngine:
             reference_table=reference_table,
             code_context=code_context,
         )
+
+        # Log total prompt size
+        logger.info(f"[SIZE] Single-pass full prompt: {len(prompt):,} chars")
 
         logger.info(
             f"Calling LLM for single-pass synthesis "
@@ -381,6 +390,9 @@ class SynthesisEngine:
             )
 
         code_context = "\n\n".join(code_sections)
+
+        # Log size of cluster code context
+        logger.info(f"[SIZE] Cluster {cluster.cluster_id} code context: {len(code_context):,} chars")
 
         # Build file reference map for numbered citations (cluster-specific)
         cluster_files = cluster.files_content
@@ -560,6 +572,9 @@ Provide a comprehensive analysis focusing on the query."""
 
         combined_summaries = "\n\n" + "=" * 80 + "\n\n" + "\n\n".join(cluster_summaries)
 
+        # Log size of combined summaries
+        logger.info(f"[SIZE] Combined cluster summaries ({len(cluster_results)}): {len(combined_summaries):,} chars")
+
         # Build constants section if available
         constants_section = ""
         if constants_context:
@@ -603,6 +618,9 @@ NOTE: All citation numbers [N] in the cluster analyses have been remapped to mat
 {combined_summaries}
 
 Provide a complete, integrated analysis that addresses the original query."""
+
+        # Log total reduce prompt size
+        logger.info(f"[SIZE] Reduce full prompt: {len(prompt):,} chars")
 
         logger.debug(
             f"Calling LLM for reduce synthesis "

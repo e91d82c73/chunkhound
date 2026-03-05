@@ -102,10 +102,23 @@ async def extract_facts_with_clustering(
         max_tokens_per_cluster=max_tokens_per_cluster,
     )
 
+    # Log total chars being clustered and per-cluster distribution
+    total_chars = sum(len(content) for content in files.values())
     logger.info(
         f"Clustered {len(files)} files into {metadata['num_clusters']} HDBSCAN groups "
         f"(bounds: [{min_tokens_per_cluster:,}, {max_tokens_per_cluster:,}]) for fact extraction"
     )
+    logger.info(
+        f"[SIZE] Fact clustering input ({len(files)} files): {total_chars:,} chars"
+    )
+    for cluster in cluster_groups:
+        cluster_chars = sum(
+            len(content) for content in cluster.files_content.values()
+        )
+        logger.info(
+            f"[SIZE] Fact cluster {cluster.cluster_id} "
+            f"({len(cluster.file_paths)} files): {cluster_chars:,} chars"
+        )
 
     # Convert ClusterGroup objects to extraction format with proportional fact allocation
     clusters_for_extraction = [
@@ -123,6 +136,13 @@ async def extract_facts_with_clustering(
         clusters=clusters_for_extraction,
         root_query=root_query,
         max_concurrency=max_concurrency,
+    )
+
+    # Log size of extracted facts
+    facts_ledger_chars = len(evidence_ledger.get_facts_reduce_prompt_context())
+    logger.info(
+        f"[SIZE] Facts ledger ({evidence_ledger.facts_count} facts): "
+        f"{facts_ledger_chars:,} chars"
     )
 
     return ClusteredExtractionResult(

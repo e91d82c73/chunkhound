@@ -52,7 +52,9 @@ def find_by_type(chunks, chunk_type):
     if kind is None:
         # For BLOCK, just filter by concept
         return [c for c in chunks if c.concept == concept]
-    return [c for c in chunks if c.concept == concept and c.metadata.get("kind") == kind]
+    return [
+        c for c in chunks if c.concept == concept and c.metadata.get("kind") == kind
+    ]
 
 
 def find_by_metadata(chunks, key, value):
@@ -67,7 +69,9 @@ def assert_no_parse_errors(parser: TwinCATParser) -> None:
     )
 
 
-def extract_chunks_from_file(parser: TwinCATParser, file_path: Path) -> list[UniversalChunk]:
+def extract_chunks_from_file(
+    parser: TwinCATParser, file_path: Path
+) -> list[UniversalChunk]:
     """Extract UniversalChunks from a TcPOU file."""
     return parser.extract_universal_chunks(file_path.read_text(), file_path)
 
@@ -153,28 +157,32 @@ class TestPOUTypes:
     # --- PROGRAM Tests ---
 
     def test_program_chunk_type(self, twincat_parser, program_fixture):
-        """Test PROGRAM creates chunk with kind='program'."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        """Test PROGRAM creates separate declaration/implementation chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
         program_chunks = find_by_type(chunks, ChunkType.PROGRAM)
-        assert len(program_chunks) == 1
-        assert program_chunks[0].name == "PRG_Example"
+        # Now 2 chunks: declaration + implementation
+        assert len(program_chunks) == 2
+        chunk_names = {c.name for c in program_chunks}
+        assert chunk_names == {"PRG_Example.declaration", "PRG_Example.implementation"}
 
     def test_program_metadata(self, twincat_parser, program_fixture):
-        """Test PROGRAM metadata includes kind='program', pou_type='PROGRAM'."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        """Test PROGRAM metadata includes kind, pou_type, section."""
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
         program_chunks = find_by_type(chunks, ChunkType.PROGRAM)
-        assert len(program_chunks) == 1
-        metadata = program_chunks[0].metadata
-        assert metadata["kind"] == "program"
-        assert metadata["pou_type"] == "PROGRAM"
-        assert metadata["pou_name"] == "PRG_Example"
-        assert metadata["pou_id"] == "{11111111-1111-1111-1111-111111111111}"
+        assert len(program_chunks) == 2
+        # Check declaration chunk
+        decl = [c for c in program_chunks if c.name == "PRG_Example.declaration"][0]
+        assert decl.metadata["kind"] == "program"
+        assert decl.metadata["pou_type"] == "PROGRAM"
+        assert decl.metadata["pou_name"] == "PRG_Example"
+        assert decl.metadata["pou_id"] == "{11111111-1111-1111-1111-111111111111}"
+        assert decl.metadata["section"] == "declaration"
 
     def test_program_variables(self, twincat_parser, program_fixture):
         """Test PROGRAM extracts VAR_INPUT, VAR_OUTPUT, and VAR blocks."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # VAR_INPUT: bStart
@@ -198,28 +206,32 @@ class TestPOUTypes:
     # --- FUNCTION Tests ---
 
     def test_function_chunk_type(self, twincat_parser, function_fixture):
-        """Test FUNCTION creates chunk with kind='function'."""
-        chunks = extract_chunks_from_file(twincat_parser,function_fixture)
+        """Test FUNCTION creates separate declaration/implementation chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, function_fixture)
         assert_no_parse_errors(twincat_parser)
         function_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(function_chunks) == 1
-        assert function_chunks[0].name == "FC_Add"
+        # Now 2 chunks: declaration + implementation
+        assert len(function_chunks) == 2
+        chunk_names = {c.name for c in function_chunks}
+        assert chunk_names == {"FC_Add.declaration", "FC_Add.implementation"}
 
     def test_function_metadata(self, twincat_parser, function_fixture):
-        """Test FUNCTION metadata includes kind='function', pou_type='FUNCTION'."""
-        chunks = extract_chunks_from_file(twincat_parser,function_fixture)
+        """Test FUNCTION metadata includes kind, pou_type, section."""
+        chunks = extract_chunks_from_file(twincat_parser, function_fixture)
         assert_no_parse_errors(twincat_parser)
         function_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(function_chunks) == 1
-        metadata = function_chunks[0].metadata
-        assert metadata["kind"] == "function"
-        assert metadata["pou_type"] == "FUNCTION"
-        assert metadata["pou_name"] == "FC_Add"
-        assert metadata["pou_id"] == "{22222222-2222-2222-2222-222222222222}"
+        assert len(function_chunks) == 2
+        # Check declaration chunk
+        decl = [c for c in function_chunks if c.name == "FC_Add.declaration"][0]
+        assert decl.metadata["kind"] == "function"
+        assert decl.metadata["pou_type"] == "FUNCTION"
+        assert decl.metadata["pou_name"] == "FC_Add"
+        assert decl.metadata["pou_id"] == "{22222222-2222-2222-2222-222222222222}"
+        assert decl.metadata["section"] == "declaration"
 
     def test_function_variables(self, twincat_parser, function_fixture):
         """Test FUNCTION extracts VAR_INPUT and VAR blocks."""
-        chunks = extract_chunks_from_file(twincat_parser,function_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # VAR_INPUT: nA, nB
@@ -246,7 +258,7 @@ class TestPOUChunkCreation:
     """Test POU (Program Organization Unit) chunk creation."""
 
     def test_function_block_chunk(self, twincat_parser):
-        """Test FUNCTION_BLOCK creates chunk with kind='function_block'."""
+        """Test FUNCTION_BLOCK creates separate declaration/implementation chunks."""
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{12345678-1234-1234-1234-123456789abc}" SpecialFunc="None">
@@ -263,11 +275,13 @@ END_VAR
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
-        assert len(pou_chunks) == 1
-        assert pou_chunks[0].name == "FB_Test"
+        # Now 2 chunks: declaration + implementation
+        assert len(pou_chunks) == 2
+        chunk_names = {c.name for c in pou_chunks}
+        assert chunk_names == {"FB_Test.declaration", "FB_Test.implementation"}
 
     def test_pou_metadata(self, twincat_parser):
-        """Test POU metadata includes pou_type, pou_name, pou_id, kind."""
+        """Test POU metadata includes pou_type, pou_name, pou_id, kind, section."""
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{aaaa-bbbb-cccc-dddd}" SpecialFunc="None">
@@ -282,12 +296,14 @@ END_VAR
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
+        # Only declaration (empty implementation)
         assert len(pou_chunks) == 1
         metadata = pou_chunks[0].metadata
         assert metadata["kind"] == "function_block"
         assert metadata["pou_type"] == "FUNCTION_BLOCK"
         assert metadata["pou_name"] == "FB_Test"
         assert metadata["pou_id"] == "{aaaa-bbbb-cccc-dddd}"
+        assert metadata["section"] == "declaration"
 
 
 # =============================================================================
@@ -466,7 +482,8 @@ END_VAR
         assert_no_parse_errors(twincat_parser)
         # Filter by symbol AND concept=DEFINITION (there's also an IMPORT chunk)
         var_chunks = [
-            c for c in find_by_symbol(chunks, "FB_Test.extValue")
+            c
+            for c in find_by_symbol(chunks, "FB_Test.extValue")
             if c.concept == UniversalConcept.DEFINITION
         ]
         assert len(var_chunks) == 1
@@ -915,7 +932,11 @@ END_VAR
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
 
-        flag_chunks = [c for c in chunks if c.name in ("FB_Test.bFlag1", "FB_Test.bFlag2", "FB_Test.bFlag3")]
+        flag_chunks = [
+            c
+            for c in chunks
+            if c.name in ("FB_Test.bFlag1", "FB_Test.bFlag2", "FB_Test.bFlag3")
+        ]
         assert len(flag_chunks) == 3
 
         # All should have BOOL data type
@@ -934,7 +955,7 @@ class TestActionChunks:
     """Test ACTION chunk creation and metadata."""
 
     def test_action_chunk_created(self, twincat_parser):
-        """Test ACTION creates chunk with ChunkType.ACTION."""
+        """Test ACTION creates separate declaration/implementation chunks."""
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
@@ -956,11 +977,14 @@ END_VAR
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
-        assert len(action_chunks) == 1
-        assert action_chunks[0].name == "FB_Test.ProcessData"
+        # 2 chunks: declaration + implementation
+        assert len(action_chunks) == 2
+        chunk_names = {c.name for c in action_chunks}
+        assert "FB_Test.ProcessData.declaration" in chunk_names
+        assert "FB_Test.ProcessData.implementation" in chunk_names
 
     def test_action_metadata(self, twincat_parser):
-        """Test action metadata includes kind='action', pou_name, action_id."""
+        """Test action metadata includes kind='action', pou_name, action_id, section."""
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
@@ -979,11 +1003,13 @@ END_VAR
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
+        # Only implementation (empty declaration)
         assert len(action_chunks) == 1
         metadata = action_chunks[0].metadata
         assert metadata["kind"] == "action"
         assert metadata["pou_name"] == "FB_Test"
         assert metadata["action_id"] == "{action-uuid}"
+        assert metadata["section"] == "implementation"
 
     def test_action_local_variables_have_action_name(self, twincat_parser):
         """Test action local variables have metadata['action_name'] set."""
@@ -1042,7 +1068,7 @@ END_VAR
         assert action_var.metadata["var_class"] == "local"
 
     def test_multiple_actions(self, twincat_parser):
-        """Test multiple actions create separate ACTION chunks."""
+        """Test multiple actions create separate implementation chunks."""
         xml = """<?xml version="1.0" encoding="utf-8"?>
 <TcPlcObject Version="1.1.0.1">
   <POU Name="FB_Test" Id="{1234}" SpecialFunc="None">
@@ -1065,10 +1091,14 @@ END_VAR
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
+        # 2 implementation chunks (empty declarations skipped)
         assert len(action_chunks) == 2
 
         action_names = {c.name for c in action_chunks}
-        assert action_names == {"FB_Test.ActionOne", "FB_Test.ActionTwo"}
+        assert action_names == {
+            "FB_Test.ActionOne.implementation",
+            "FB_Test.ActionTwo.implementation",
+        }
 
 
 # =============================================================================
@@ -1081,21 +1111,24 @@ class TestComprehensiveFixture:
 
     def test_fixture_parses_without_errors(self, twincat_parser, comprehensive_fixture):
         """Test fixture parses without parse_errors."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert len(chunks) > 0
         assert len(twincat_parser.parse_errors) == 0
 
     def test_fixture_main_pou(self, twincat_parser, comprehensive_fixture):
-        """Test fixture has FB_ComprehensiveExample FUNCTION_BLOCK chunk."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        """Test fixture has FB_ComprehensiveExample FUNCTION_BLOCK chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.FUNCTION_BLOCK)
-        assert len(pou_chunks) == 1
-        assert pou_chunks[0].name == "FB_ComprehensiveExample"
+        # Now 2 chunks: declaration + implementation
+        assert len(pou_chunks) == 2
+        chunk_names = {c.name for c in pou_chunks}
+        assert "FB_ComprehensiveExample.declaration" in chunk_names
+        assert "FB_ComprehensiveExample.implementation" in chunk_names
 
     def test_fixture_var_input_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts all VAR_INPUT variables."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         input_vars = find_by_metadata(chunks, "var_class", "input")
         # Fixture has: bEnable, nInputValue, fSetpoint, sCommand, anInputArray, afMatrix
@@ -1103,7 +1136,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_output_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts all VAR_OUTPUT variables."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         output_vars = find_by_metadata(chunks, "var_class", "output")
         # From fixture: bDone, bError, nErrorCode, sStatus, anResults
@@ -1111,7 +1144,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_in_out_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts both VAR_IN_OUT variables."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         in_out_vars = find_by_metadata(chunks, "var_class", "in_out")
         # From fixture: refCounter, aBuffer
@@ -1119,7 +1152,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_stat_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts VAR_STAT variables with var_class='static'."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         static_vars = find_by_metadata(chunks, "var_class", "static")
         # From fixture: nCallCount, fAccumulator
@@ -1127,7 +1160,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_var_temp_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts VAR_TEMP variables with var_class='temp'."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         temp_vars = find_by_metadata(chunks, "var_class", "temp")
         # From fixture: nTempValue, fTempResult
@@ -1135,7 +1168,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_retain_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts RETAIN variables with retain=True."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         retain_vars = find_by_metadata(chunks, "retain", True)
         # From fixture: nRetainedCounter, bRetainedFlag, stSavedState
@@ -1143,7 +1176,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_persistent_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts PERSISTENT variables with persistent=True."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         persistent_vars = find_by_metadata(chunks, "persistent", True)
         # From fixture: nPersistentValue, stSavedState
@@ -1151,11 +1184,10 @@ class TestComprehensiveFixture:
 
     def test_fixture_hardware_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts AT directive variables with hw_address."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         hw_vars = [
-            c for c in chunks
-            if c.metadata and c.metadata.get("hw_address") is not None
+            c for c in chunks if c.metadata and c.metadata.get("hw_address") is not None
         ]
         # From fixture: bDigitalInput, nAnalogInput, bDigitalOutput, nAnalogOutput,
         #               nMemoryWord, bMemoryBit
@@ -1163,17 +1195,24 @@ class TestComprehensiveFixture:
 
     def test_fixture_actions(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts ProcessData and ResetState ACTION chunks."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         action_chunks = find_by_type(chunks, ChunkType.ACTION)
-        assert len(action_chunks) == 2
+        # Each action has declaration + implementation = 4 total
+        assert len(action_chunks) == 4
 
-        action_names = {c.name for c in action_chunks}
-        assert action_names == {"FB_ComprehensiveExample.ProcessData", "FB_ComprehensiveExample.ResetState"}
+        # Check implementation chunks exist
+        impl_names = {
+            c.name
+            for c in action_chunks
+            if c.metadata.get("section") == "implementation"
+        }
+        assert "FB_ComprehensiveExample.ProcessData.implementation" in impl_names
+        assert "FB_ComprehensiveExample.ResetState.implementation" in impl_names
 
     def test_fixture_action_local_vars(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts action-scoped variables with action_name."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # ProcessData action vars: nLocalIndex, fLocalSum, bLocalFlag, anLocalBuffer
@@ -1186,7 +1225,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_constant_variables(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts VAR CONSTANT variables with constant=True."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         constant_vars = find_by_metadata(chunks, "constant", True)
         # From fixture: c_nMaxItems, c_fPi, c_sVersion
@@ -1194,7 +1233,7 @@ class TestComprehensiveFixture:
 
     def test_fixture_control_flow_blocks(self, twincat_parser, comprehensive_fixture):
         """Test fixture extracts BLOCK chunks for control flow in implementation."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # Fixture has: multiple IF, CASE, FOR, WHILE, REPEAT blocks
@@ -1212,7 +1251,7 @@ class TestComprehensiveFixture:
         self, twincat_parser, comprehensive_fixture
     ):
         """Test all chunks have language_node_type set (indicates TwinCAT/Lark origin)."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         for chunk in chunks:
             # UniversalChunk is language-agnostic but tracks origin via language_node_type
@@ -1267,8 +1306,14 @@ END_VAR
         var_chunk = find_by_symbol(chunks, "FB_Test.nValue")[0]
 
         expected_fields = [
-            "kind", "pou_type", "pou_name", "var_class",
-            "data_type", "hw_address", "retain", "persistent"
+            "kind",
+            "pou_type",
+            "pou_name",
+            "var_class",
+            "data_type",
+            "hw_address",
+            "retain",
+            "persistent",
         ]
         for field in expected_fields:
             assert field in var_chunk.metadata, f"Missing field: {field}"
@@ -1313,29 +1358,34 @@ class TestTwinCATLineNumbers:
     """Test that line numbers are absolute (relative to XML file, not CDATA)."""
 
     def test_pou_chunk_has_absolute_start_line(self, twincat_parser, program_fixture):
-        """Test POU chunk start_line equals CDATA start position (line 4)."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        """Test POU declaration chunk start_line equals CDATA start (line 4)."""
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.PROGRAM)
-        assert len(pou_chunks) == 1
+        assert len(pou_chunks) == 2
         # Declaration CDATA starts at line 4 in example_program.TcPOU
-        assert pou_chunks[0].start_line == 4
+        decl_chunk = [
+            c for c in pou_chunks if c.metadata.get("section") == "declaration"
+        ][0]
+        assert decl_chunk.start_line == 4
 
     def test_pou_chunk_end_line_spans_content(self, twincat_parser, program_fixture):
-        """Test POU end_line includes implementation (through line 20)."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        """Test POU implementation end_line (line 20)."""
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
         pou_chunks = find_by_type(chunks, ChunkType.PROGRAM)
-        assert len(pou_chunks) == 1
-        # Implementation CDATA content spans lines 16-20 (includes trailing newline)
-        # Line 19 is END_IF;, line 20 is the newline before ]]></ST>
-        assert pou_chunks[0].end_line == 20
+        assert len(pou_chunks) == 2
+        # Implementation CDATA content spans lines 16-20
+        impl_chunk = [
+            c for c in pou_chunks if c.metadata.get("section") == "implementation"
+        ][0]
+        assert impl_chunk.end_line == 20
 
     def test_variable_chunks_have_absolute_line_numbers(
         self, twincat_parser, program_fixture
     ):
         """Test that variable line numbers are > 3 (not CDATA-relative starting at 1)."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
         var_chunks = find_by_type(chunks, ChunkType.FIELD)
         assert len(var_chunks) >= 3  # bStart, bRunning, nCycleCount
@@ -1351,7 +1401,7 @@ class TestTwinCATLineNumbers:
         self, twincat_parser, program_fixture
     ):
         """Test specific variable line numbers: bStart=6, bRunning=9, nCycleCount=12."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # bStart is on line 6
@@ -1371,7 +1421,7 @@ class TestTwinCATLineNumbers:
 
     def test_line_numbers_are_not_cdata_relative(self, twincat_parser, program_fixture):
         """Verify line numbers are > 3 (XML-absolute, not CDATA-relative starting at 1)."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
 
         for chunk in chunks:
@@ -1507,7 +1557,10 @@ class TestImplementationBlockExtraction:
     def function_loops_fixture(self):
         """Load the FUNCTION loops test fixture."""
         fixture_path = (
-            Path(__file__).parent / "fixtures" / "twincat" / "example_function_loops.TcPOU"
+            Path(__file__).parent
+            / "fixtures"
+            / "twincat"
+            / "example_function_loops.TcPOU"
         )
         if not fixture_path.exists():
             pytest.skip("FUNCTION loops fixture not found")
@@ -1666,7 +1719,7 @@ FC_Test := i;
 
     def test_function_multiple_blocks(self, twincat_parser, function_loops_fixture):
         """Test that multiple blocks are extracted from a single FUNCTION."""
-        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # Fixture has: 1 CASE with nested (FOR, WHILE, REPEAT) = 4 total
@@ -1674,7 +1727,7 @@ FC_Test := i;
 
     def test_function_nested_blocks(self, twincat_parser, function_if_fixture):
         """Test that nested IF blocks are both extracted."""
-        chunks = extract_chunks_from_file(twincat_parser,function_if_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_if_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         if_blocks = find_by_metadata(block_chunks, "kind", "if_block")
@@ -1774,14 +1827,17 @@ END_IF;
         # Verify FQN symbol pattern: POUName.ActionName.{kind}_{line}
         assert block_chunks[0].name.startswith("FC_Test.DoProcess.if_block_")
 
-    def test_function_action_multiple_blocks(self, twincat_parser, function_action_fixture):
+    def test_function_action_multiple_blocks(
+        self, twincat_parser, function_action_fixture
+    ):
         """Test Action with multiple control flow blocks extracts all of them."""
-        chunks = extract_chunks_from_file(twincat_parser,function_action_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_action_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Get action blocks only (those with action_name in metadata)
         action_blocks = [
-            c for c in chunks
+            c
+            for c in chunks
             if c.concept == UniversalConcept.BLOCK and c.metadata.get("action_name")
         ]
         # Action has: FOR (with nested IF), WHILE = 3 blocks
@@ -1823,7 +1879,7 @@ END_FOR;
 
     def test_program_block_extraction(self, twincat_parser, program_fixture):
         """Test that PROGRAM extracts BLOCK chunks for control flow."""
-        chunks = extract_chunks_from_file(twincat_parser,program_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, program_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # program_fixture contains IF/CASE/FOR/WHILE/REPEAT
@@ -2017,7 +2073,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         # Should still create the FUNCTION chunk
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
         # Should have parse error logged
         assert len(twincat_parser.parse_errors) > 0
         assert "parse error" in twincat_parser.parse_errors[0].lower()
@@ -2057,7 +2113,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_binary_literals_in_implementation(self, twincat_parser):
         """Test 2#10101010 binary literals in assignments."""
@@ -2083,7 +2139,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_octal_literals_in_implementation(self, twincat_parser):
         """Test 8#755 octal literals in assignments."""
@@ -2107,7 +2163,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_scientific_notation_in_implementation(self, twincat_parser):
         """Test 1.5e-3, 2E10 scientific notation in assignments."""
@@ -2133,7 +2189,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_negative_numbers_in_implementation(self, twincat_parser):
         """Test -42, -3.14 negative numbers in assignments."""
@@ -2159,7 +2215,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -2192,7 +2248,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_double_quoted_strings_in_implementation(self, twincat_parser):
         """Test "World" double-quoted strings in assignments."""
@@ -2216,7 +2272,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_time_literals_in_implementation(self, twincat_parser):
         """Test T#100ms, T#5s, T#-10s time literals."""
@@ -2242,7 +2298,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_time_literals_in_function_calls(self, twincat_parser):
         """Test time literals in function block calls like fbTimer(PT := T#5s)."""
@@ -2268,7 +2324,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -2301,7 +2357,7 @@ FC_IntToReal := fReal;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_real_to_int_conversion(self, twincat_parser):
         """Test REAL_TO_INT(fReal) in expressions."""
@@ -2325,7 +2381,7 @@ FC_RealToInt := nInt;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_dint_to_string_conversion(self, twincat_parser):
         """Test DINT_TO_STRING(nDint) in expressions."""
@@ -2349,7 +2405,7 @@ FC_DintToString := 1;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_type_conversion_in_condition(self, twincat_parser):
         """Test IF INT_TO_REAL(n) > 0.0 THEN type conversion in conditions."""
@@ -2373,7 +2429,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_nested_type_conversions(self, twincat_parser):
         """Test INT_TO_REAL(REAL_TO_INT(f)) nested conversions."""
@@ -2397,7 +2453,7 @@ FC_NestedConversions := fRounded;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -2430,7 +2486,7 @@ FC_ArrayAccess := arr[0] + arr[i];
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_multi_dim_array_access(self, twincat_parser):
         """Test matrix[i, j] in assignments."""
@@ -2455,7 +2511,7 @@ FC_MultiDimArrayAccess := matrix[0, 0] + matrix[i, j];
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_array_access_in_condition(self, twincat_parser):
         """Test IF arr[0] > 0 THEN array access in conditions."""
@@ -2479,7 +2535,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_member_access(self, twincat_parser):
         """Test stData.nValue in assignments."""
@@ -2501,7 +2557,7 @@ FC_MemberAccess := stData.nValue;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_nested_member_access(self, twincat_parser):
         """Test stData.stNested.fValue in assignments."""
@@ -2523,7 +2579,7 @@ FC_NestedMemberAccess := stData.stNested.fValue;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_bit_access(self, twincat_parser):
         """Test nWord.0, nDword.15 bit access."""
@@ -2553,7 +2609,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_combined_access_patterns(self, twincat_parser):
         """Test stData.anArray[i].nFlags.3 combined access patterns."""
@@ -2579,7 +2635,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -2610,7 +2666,7 @@ FC_ExptPrecedence := fResult;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_complex_arithmetic_expression(self, twincat_parser):
         """Test (10 + 5) * 3 - 2 complex arithmetic."""
@@ -2632,7 +2688,7 @@ FC_ComplexArithmetic := nResult;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_compound_boolean_conditions(self, twincat_parser):
         """Test (n > 0 AND n < 100) OR bFlag compound conditions."""
@@ -2658,7 +2714,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_short_circuit_operators(self, twincat_parser):
         """Test AND_THEN, OR_ELSE short-circuit operators in conditions."""
@@ -2686,7 +2742,7 @@ END_IF;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_expt_as_function_call(self, twincat_parser):
         """Test EXPT(2.0, 8.0) function call syntax."""
@@ -2708,7 +2764,7 @@ FC_ExptFunction := fResult;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -2744,7 +2800,7 @@ FC_PositionalArgs := nMax + nAbs;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_function_named_args(self, twincat_parser):
         """Test fb(IN := bEnable, PT := T#5s) named argument calls."""
@@ -2768,7 +2824,7 @@ FC_NamedArgs := fbTON.Q;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_function_output_args(self, twincat_parser):
         """Test fb(Q => bDone, ET => tDuration) output argument calls."""
@@ -2792,7 +2848,7 @@ FC_OutputArgs := bDone;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_function_mixed_args(self, twincat_parser):
         """Test fb(a, IN := b, Q => c) mixed argument calls."""
@@ -2817,7 +2873,7 @@ FC_MixedArgs := nOutput;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_method_call(self, twincat_parser):
         """Test fbTimer.Reset() method calls."""
@@ -2840,7 +2896,7 @@ FC_MethodCall := 1;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_chained_method_call(self, twincat_parser):
         """Test stData.stNested.GetResult() chained method calls."""
@@ -2863,7 +2919,7 @@ FC_ChainedMethodCall := nResult;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -2894,7 +2950,7 @@ FC_ExpressionStatement := 1;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_empty_statement(self, twincat_parser):
         """Test ; empty statement is valid."""
@@ -2918,7 +2974,7 @@ FC_EmptyStatement := n;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_exit_in_loop(self, twincat_parser):
         """Test EXIT; inside FOR/WHILE loops."""
@@ -2944,7 +3000,7 @@ FC_ExitInLoop := i;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_continue_in_loop(self, twincat_parser):
         """Test CONTINUE; inside FOR loop."""
@@ -2973,7 +3029,7 @@ FC_ContinueInLoop := nSum;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_return_statement(self, twincat_parser):
         """Test RETURN; and RETURN(value); statements."""
@@ -2998,7 +3054,7 @@ FC_ReturnStatement := n;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_array_element_assignment(self, twincat_parser):
         """Test arr[i] := value; array element assignment."""
@@ -3023,7 +3079,7 @@ FC_ArrayAssignment := arr[5];
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
     def test_member_assignment(self, twincat_parser):
         """Test stData.nValue := 42; member assignment."""
@@ -3046,7 +3102,7 @@ FC_MemberAssignment := stData.nValue;
         chunks = twincat_parser.extract_universal_chunks(xml)
         assert_no_parse_errors(twincat_parser)
         func_chunks = find_by_type(chunks, ChunkType.FUNCTION)
-        assert len(func_chunks) == 1
+        assert len(func_chunks) == 2  # declaration + implementation
 
 
 # =============================================================================
@@ -3198,7 +3254,10 @@ class TestImplementationBlockLineNumbers:
     def function_loops_fixture(self):
         """Load the FUNCTION loops test fixture."""
         fixture_path = (
-            Path(__file__).parent / "fixtures" / "twincat" / "example_function_loops.TcPOU"
+            Path(__file__).parent
+            / "fixtures"
+            / "twincat"
+            / "example_function_loops.TcPOU"
         )
         if not fixture_path.exists():
             pytest.skip("FUNCTION loops fixture not found")
@@ -3276,7 +3335,7 @@ END_IF;
         self, twincat_parser, function_loops_fixture
     ):
         """Test specific FOR loop line numbers verified against known XML positions."""
-        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         for_loops = find_by_metadata(block_chunks, "kind", "for_loop")
@@ -3291,7 +3350,7 @@ END_IF;
         self, twincat_parser, function_if_fixture
     ):
         """Test outer IF and nested IF have different, correct line numbers."""
-        chunks = extract_chunks_from_file(twincat_parser,function_if_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_if_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         if_blocks = find_by_metadata(block_chunks, "kind", "if_block")
@@ -3307,7 +3366,7 @@ END_IF;
 
     def test_case_block_line_numbers(self, twincat_parser, function_loops_fixture):
         """Test CASE block start/end lines are XML-absolute."""
-        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         case_blocks = find_by_metadata(block_chunks, "kind", "case_block")
@@ -3318,7 +3377,7 @@ END_IF;
 
     def test_while_loop_line_numbers(self, twincat_parser, function_loops_fixture):
         """Test WHILE block line numbers are verified."""
-        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         while_loops = find_by_metadata(block_chunks, "kind", "while_loop")
@@ -3330,7 +3389,7 @@ END_IF;
 
     def test_repeat_loop_line_numbers(self, twincat_parser, function_loops_fixture):
         """Test REPEAT block line numbers are verified."""
-        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         repeat_loops = find_by_metadata(block_chunks, "kind", "repeat_loop")
@@ -3343,7 +3402,7 @@ END_IF;
         self, twincat_parser, function_action_fixture
     ):
         """Test blocks in ACTION have XML-absolute lines (not action-relative)."""
-        chunks = extract_chunks_from_file(twincat_parser,function_action_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_action_fixture)
         assert_no_parse_errors(twincat_parser)
         # Get action blocks only
         action_blocks = [
@@ -3362,7 +3421,7 @@ END_IF;
         self, twincat_parser, function_loops_fixture
     ):
         """Test multiple blocks have increasing, non-overlapping line numbers."""
-        chunks = extract_chunks_from_file(twincat_parser,function_loops_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, function_loops_fixture)
         assert_no_parse_errors(twincat_parser)
         block_chunks = find_by_type(chunks, ChunkType.BLOCK)
         # Sort by start_line
@@ -3432,29 +3491,46 @@ class TestMethodExtraction:
         return fixture_path
 
     def test_method_chunk_created(self, twincat_parser, method_fixture):
-        """Test METHOD creates ChunkType.METHOD chunks."""
-        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
+        """Test METHOD creates separate declaration/implementation chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
-        assert len(method_chunks) == 3
-        method_names = {c.name for c in method_chunks}
-        assert method_names == {"FB_WithMethods.Initialize", "FB_WithMethods.GetStatus", "FB_WithMethods.ProcessData"}
+        # 3 methods x 2 chunks each = 6 total
+        assert len(method_chunks) == 6
+        # Check for declaration/implementation suffixes
+        decl_names = {
+            c.name for c in method_chunks if c.metadata.get("section") == "declaration"
+        }
+        impl_names = {
+            c.name
+            for c in method_chunks
+            if c.metadata.get("section") == "implementation"
+        }
+        assert "FB_WithMethods.Initialize.declaration" in decl_names
+        assert "FB_WithMethods.Initialize.implementation" in impl_names
 
     def test_method_metadata(self, twincat_parser, method_fixture):
-        """Test METHOD metadata includes kind='method', pou_name, method_id."""
-        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
+        """Test METHOD metadata includes kind='method', pou_name, method_id, section."""
+        chunks = extract_chunks_from_file(twincat_parser, method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
-        init_method = [c for c in method_chunks if c.name == "FB_WithMethods.Initialize"][0]
+        init_decl = [
+            c
+            for c in method_chunks
+            if c.name == "FB_WithMethods.Initialize.declaration"
+        ][0]
 
-        assert init_method.metadata["kind"] == "method"
-        assert init_method.metadata["pou_type"] == "FUNCTION_BLOCK"
-        assert init_method.metadata["pou_name"] == "FB_WithMethods"
-        assert init_method.metadata["method_id"] == "{11111111-2222-3333-4444-555555555555}"
+        assert init_decl.metadata["kind"] == "method"
+        assert init_decl.metadata["pou_type"] == "FUNCTION_BLOCK"
+        assert init_decl.metadata["pou_name"] == "FB_WithMethods"
+        assert (
+            init_decl.metadata["method_id"] == "{11111111-2222-3333-4444-555555555555}"
+        )
+        assert init_decl.metadata["section"] == "declaration"
 
     def test_method_variables_extracted(self, twincat_parser, method_fixture):
         """Test METHOD variable declarations are extracted as FIELD chunks."""
-        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, method_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Variables from Initialize method: bReset, nInitValue, bLocalFlag
@@ -3472,12 +3548,13 @@ class TestMethodExtraction:
 
     def test_method_blocks_extracted(self, twincat_parser, method_fixture):
         """Test METHOD control flow blocks are extracted as BLOCK chunks."""
-        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, method_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Initialize method has an IF block
         init_blocks = [
-            c for c in chunks
+            c
+            for c in chunks
             if c.concept == UniversalConcept.BLOCK
             and c.metadata.get("method_name") == "Initialize"
         ]
@@ -3486,30 +3563,40 @@ class TestMethodExtraction:
         # Verify FQN symbol pattern: POUName.MethodName.{kind}_{line}
         assert init_blocks[0].name.startswith("FB_WithMethods.Initialize.if_block_")
 
-    def test_method_code_includes_declaration_and_implementation(
+    def test_method_code_separate_declaration_and_implementation(
         self, twincat_parser, method_fixture
     ):
-        """Test METHOD chunk code contains both declaration and implementation."""
-        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
+        """Test METHOD has separate declaration and implementation chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
-        init_method = [c for c in method_chunks if c.name == "FB_WithMethods.Initialize"][0]
+        init_decl = [
+            c
+            for c in method_chunks
+            if c.name == "FB_WithMethods.Initialize.declaration"
+        ][0]
+        init_impl = [
+            c
+            for c in method_chunks
+            if c.name == "FB_WithMethods.Initialize.implementation"
+        ][0]
 
         # Declaration should include METHOD header and VAR blocks
-        assert "METHOD Initialize" in init_method.content
-        assert "VAR_INPUT" in init_method.content
-        assert "bReset" in init_method.content
+        assert "METHOD Initialize" in init_decl.content
+        assert "VAR_INPUT" in init_decl.content
+        assert "bReset" in init_decl.content
 
         # Implementation should include the IF block
-        assert "IF bReset THEN" in init_method.content
+        assert "IF bReset THEN" in init_impl.content
 
     def test_multiple_methods_have_unique_ids(self, twincat_parser, method_fixture):
-        """Test each METHOD has unique method_id."""
-        chunks = extract_chunks_from_file(twincat_parser,method_fixture)
+        """Test each METHOD pair shares the same method_id."""
+        chunks = extract_chunks_from_file(twincat_parser, method_fixture)
         assert_no_parse_errors(twincat_parser)
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
+        # 3 unique method_ids, each appearing twice (decl + impl)
         method_ids = [c.metadata["method_id"] for c in method_chunks]
-        assert len(method_ids) == len(set(method_ids))  # All unique
+        assert len(set(method_ids)) == 3
 
     def test_method_from_xml_string(self, twincat_parser):
         """Test METHOD extraction from inline XML."""
@@ -3538,9 +3625,16 @@ END_VAR
         assert_no_parse_errors(twincat_parser)
 
         method_chunks = find_by_type(chunks, ChunkType.METHOD)
-        assert len(method_chunks) == 1
-        assert method_chunks[0].name == "FB_Test.DoWork"
-        assert method_chunks[0].metadata["method_id"] == "{method-uuid}"
+        # 2 chunks: declaration + implementation
+        assert len(method_chunks) == 2
+        chunk_names = {c.name for c in method_chunks}
+        assert chunk_names == {
+            "FB_Test.DoWork.declaration",
+            "FB_Test.DoWork.implementation",
+        }
+        # Both share same method_id
+        for c in method_chunks:
+            assert c.metadata["method_id"] == "{method-uuid}"
 
 
 # =============================================================================
@@ -3565,51 +3659,47 @@ class TestPropertyExtraction:
         return fixture_path
 
     def test_property_chunk_created(self, twincat_parser, property_fixture):
-        """Test PROPERTY creates ChunkType.PROPERTY chunks."""
-        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
+        """Test PROPERTY creates separate declaration/get/set chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        assert len(property_chunks) == 3
-        property_names = {c.name for c in property_chunks}
-        assert property_names == {"FB_WithProperties.Value", "FB_WithProperties.ReadOnlyStatus", "FB_WithProperties.Name"}
+        # Value: decl + get + set = 3, ReadOnlyStatus: decl + get = 2, Name: decl + get + set = 3 = 8 total
+        assert len(property_chunks) >= 7
+        # Check for section suffixes
+        sections = {c.metadata.get("section") for c in property_chunks}
+        assert "declaration" in sections
+        assert "get" in sections
 
     def test_property_metadata(self, twincat_parser, property_fixture):
-        """Test PROPERTY metadata includes kind='property', pou_name, property_id."""
-        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
+        """Test PROPERTY metadata includes kind='property', pou_name, property_id, section."""
+        chunks = extract_chunks_from_file(twincat_parser, property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        value_prop = [c for c in property_chunks if c.name == "FB_WithProperties.Value"][0]
+        value_decl = [
+            c
+            for c in property_chunks
+            if c.name == "FB_WithProperties.Value.declaration"
+        ][0]
 
-        assert value_prop.metadata["kind"] == "property"
-        assert value_prop.metadata["pou_type"] == "FUNCTION_BLOCK"
-        assert value_prop.metadata["pou_name"] == "FB_WithProperties"
-        assert value_prop.metadata["property_id"] == "{44444444-5555-6666-7777-888888888888}"
+        assert value_decl.metadata["kind"] == "property"
+        assert value_decl.metadata["pou_type"] == "FUNCTION_BLOCK"
+        assert value_decl.metadata["pou_name"] == "FB_WithProperties"
+        assert (
+            value_decl.metadata["property_id"]
+            == "{44444444-5555-6666-7777-888888888888}"
+        )
+        assert value_decl.metadata["section"] == "declaration"
 
-    def test_property_get_set_metadata(self, twincat_parser, property_fixture):
-        """Test PROPERTY metadata includes has_get and has_set flags."""
-        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
+    def test_property_separate_accessor_chunks(self, twincat_parser, property_fixture):
+        """Test PROPERTY has separate declaration, get, and set chunks."""
+        chunks = extract_chunks_from_file(twincat_parser, property_fixture)
         assert_no_parse_errors(twincat_parser)
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-
-        # Value property has both GET and SET
-        value_prop = [c for c in property_chunks if c.name == "FB_WithProperties.Value"][0]
-        assert value_prop.metadata["has_get"] is True
-        assert value_prop.metadata["has_set"] is True
-
-        # ReadOnlyStatus has only GET (no SET)
-        readonly_prop = [c for c in property_chunks if c.name == "FB_WithProperties.ReadOnlyStatus"][0]
-        assert readonly_prop.metadata["has_get"] is True
-        assert readonly_prop.metadata["has_set"] is False
-
-    def test_property_code_includes_accessors(self, twincat_parser, property_fixture):
-        """Test PROPERTY chunk code contains GET and SET implementations."""
-        chunks = extract_chunks_from_file(twincat_parser,property_fixture)
-        assert_no_parse_errors(twincat_parser)
-        property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        value_prop = [c for c in property_chunks if c.name == "FB_WithProperties.Value"][0]
-
-        # Code should include the GET and SET implementations
-        assert "nInternal" in value_prop.content
+        value_get = [
+            c for c in property_chunks if c.name == "FB_WithProperties.Value.get"
+        ]
+        assert len(value_get) == 1
+        assert "nInternal" in value_get[0].content
 
     def test_property_from_xml_string(self, twincat_parser):
         """Test PROPERTY extraction from inline XML."""
@@ -3648,11 +3738,17 @@ END_VAR
         assert_no_parse_errors(twincat_parser)
 
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        assert len(property_chunks) == 1
-        assert property_chunks[0].name == "FB_Test.MyProp"
-        assert property_chunks[0].metadata["property_id"] == "{prop-uuid}"
-        assert property_chunks[0].metadata["has_get"] is True
-        assert property_chunks[0].metadata["has_set"] is True
+        # 3 chunks: declaration + get + set
+        assert len(property_chunks) == 3
+        chunk_names = {c.name for c in property_chunks}
+        assert chunk_names == {
+            "FB_Test.MyProp.declaration",
+            "FB_Test.MyProp.get",
+            "FB_Test.MyProp.set",
+        }
+        # All share same property_id
+        for c in property_chunks:
+            assert c.metadata["property_id"] == "{prop-uuid}"
 
     def test_readonly_property(self, twincat_parser):
         """Test read-only PROPERTY (GET only, no SET)."""
@@ -3683,9 +3779,10 @@ END_VAR
         assert_no_parse_errors(twincat_parser)
 
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        assert len(property_chunks) == 1
-        assert property_chunks[0].metadata["has_get"] is True
-        assert property_chunks[0].metadata["has_set"] is False
+        # 2 chunks: declaration + get (no set)
+        assert len(property_chunks) == 2
+        chunk_names = {c.name for c in property_chunks}
+        assert chunk_names == {"FB_Test.ReadOnly.declaration", "FB_Test.ReadOnly.get"}
 
     def test_writeonly_property(self, twincat_parser):
         """Test write-only PROPERTY (SET only, no GET)."""
@@ -3716,9 +3813,10 @@ END_VAR
         assert_no_parse_errors(twincat_parser)
 
         property_chunks = find_by_type(chunks, ChunkType.PROPERTY)
-        assert len(property_chunks) == 1
-        assert property_chunks[0].metadata["has_get"] is False
-        assert property_chunks[0].metadata["has_set"] is True
+        # 2 chunks: declaration + set (no get)
+        assert len(property_chunks) == 2
+        chunk_names = {c.name for c in property_chunks}
+        assert chunk_names == {"FB_Test.WriteOnly.declaration", "FB_Test.WriteOnly.set"}
 
 
 # =============================================================================
@@ -3732,21 +3830,18 @@ class TestChunkNameInSourceCode:
     def test_comprehensive_chunk_names_in_start_line(
         self, twincat_parser, comprehensive_fixture
     ):
-        """Verify each chunk's name appears in the code at its start_line.
+        """Verify each chunk's name component appears in code at its start_line.
 
-        For every chunk, extract the final segment of the symbol (after the last '.'),
+        For every chunk, extract the meaningful segment of the symbol,
         and verify it exists in the line of code at start_line.
-
-        For FIELD (variable) chunks, checks the first two lines to handle pragma
-        attributes (e.g., {attribute 'hide'}) that precede the variable declaration.
 
         Excludes:
         - BLOCK chunks: have synthetic names (if_block_XXX, for_loop_XXX)
-        - POU chunks (FUNCTION_BLOCK, PROGRAM, FUNCTION): start_line points to
-          CDATA section start, not the declaration line
+        - POU chunks: start_line points to CDATA section start
+        - Chunks with section suffixes (declaration, implementation, get, set)
         """
         # Parse the comprehensive fixture
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
 
         # Read the source file to get individual lines
@@ -3757,12 +3852,20 @@ class TestChunkNameInSourceCode:
         # Using metadata["kind"] for UniversalChunk
         skip_kinds = {
             # BLOCK chunks have synthetic names like if_block_295, for_loop_XYZ
-            "if_block", "case_block", "for_loop", "while_loop", "repeat_loop",
+            "if_block",
+            "case_block",
+            "for_loop",
+            "while_loop",
+            "repeat_loop",
             # COMMENT chunks have synthetic names like comment_line_4
             "comment",
             # POU chunks: start_line = CDATA start, not declaration line
-            "function_block", "program", "function",
+            "function_block",
+            "program",
+            "function",
         }
+        # Section suffixes that won't appear in source
+        section_suffixes = {"declaration", "implementation", "get", "set"}
 
         for chunk in chunks:
             # Skip chunks with synthetic names or special line handling
@@ -3780,7 +3883,10 @@ class TestChunkNameInSourceCode:
                 continue
 
             # Extract the name (last segment after the final '.')
-            name = chunk.name.rpartition('.')[2]
+            name = chunk.name.rpartition(".")[2]
+            # Skip if name is a section suffix (won't appear in source)
+            if name in section_suffixes:
+                continue
 
             # Get lines at start_line and start_line+1 (1-based indexing)
             line_index = chunk.start_line - 1
@@ -3820,7 +3926,10 @@ class TestCommentExtraction:
     def comment_fixture(self):
         """Load the comment test fixture."""
         fixture_path = (
-            Path(__file__).parent / "fixtures" / "twincat" / "example_with_comments.TcPOU"
+            Path(__file__).parent
+            / "fixtures"
+            / "twincat"
+            / "example_with_comments.TcPOU"
         )
         if not fixture_path.exists():
             pytest.skip("Comment fixture not found")
@@ -3828,14 +3937,14 @@ class TestCommentExtraction:
 
     def test_comment_chunks_extracted(self, twincat_parser, comment_fixture):
         """Test that comment chunks are extracted from the fixture."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         assert len(comment_chunks) > 0, "Expected at least one comment chunk"
 
     def test_block_comment_type(self, twincat_parser, comment_fixture):
         """Test that block comments have comment_type='block' in metadata."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         block_comments = find_by_metadata(chunks, "comment_type", "block")
         assert len(block_comments) > 0, "Expected at least one block comment"
@@ -3844,7 +3953,7 @@ class TestCommentExtraction:
 
     def test_line_comment_type(self, twincat_parser, comment_fixture):
         """Test that line comments have comment_type='line' in metadata."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         line_comments = find_by_metadata(chunks, "comment_type", "line")
         assert len(line_comments) > 0, "Expected at least one line comment"
@@ -3853,7 +3962,7 @@ class TestCommentExtraction:
 
     def test_comment_fqn_format(self, twincat_parser, comment_fixture):
         """Test that comment FQNs follow pattern: POUName.comment_line_N."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
@@ -3862,7 +3971,7 @@ class TestCommentExtraction:
 
     def test_comment_has_cleaned_text(self, twincat_parser, comment_fixture):
         """Test that comment metadata includes cleaned_text without markers."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
@@ -3874,7 +3983,7 @@ class TestCommentExtraction:
 
     def test_comment_metadata_fields(self, twincat_parser, comment_fixture):
         """Test that comment chunks have required metadata fields."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
@@ -3886,7 +3995,7 @@ class TestCommentExtraction:
 
     def test_multiline_block_comment(self, twincat_parser, comment_fixture):
         """Test that multi-line block comments have correct end_line."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         block_comments = find_by_metadata(chunks, "comment_type", "block")
         # At least one multiline block comment should exist
@@ -3895,16 +4004,18 @@ class TestCommentExtraction:
 
     def test_comment_language_node_type(self, twincat_parser, comment_fixture):
         """Test that all comment chunks have language_node_type indicating Lark origin."""
-        chunks = extract_chunks_from_file(twincat_parser,comment_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comment_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         for chunk in comment_chunks:
             # UniversalChunk is language-agnostic but tracks origin
             assert chunk.language_node_type == "lark_comment"
 
-    def test_comprehensive_fixture_has_comments(self, twincat_parser, comprehensive_fixture):
+    def test_comprehensive_fixture_has_comments(
+        self, twincat_parser, comprehensive_fixture
+    ):
         """Test that the comprehensive fixture also extracts comments."""
-        chunks = extract_chunks_from_file(twincat_parser,comprehensive_fixture)
+        chunks = extract_chunks_from_file(twincat_parser, comprehensive_fixture)
         assert_no_parse_errors(twincat_parser)
         comment_chunks = find_by_type(chunks, ChunkType.COMMENT)
         # Comprehensive fixture has comments
@@ -3916,10 +4027,13 @@ class TestCommentExtraction:
 # =============================================================================
 
 
-def find_imports_by_type(chunks: list[UniversalChunk], import_type: str) -> list[UniversalChunk]:
+def find_imports_by_type(
+    chunks: list[UniversalChunk], import_type: str
+) -> list[UniversalChunk]:
     """Filter chunks by concept=IMPORT and import_type metadata."""
     return [
-        c for c in chunks
+        c
+        for c in chunks
         if c.concept == UniversalConcept.IMPORT
         and c.metadata.get("import_type") == import_type
     ]
@@ -4335,66 +4449,82 @@ class TestTwinCATImportResolution:
         motor_file = tmp_path / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("FB_Motor", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "FB_Motor", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]
 
     def test_resolve_var_declaration(self, tmp_path, mapping):
         """Test resolving type from variable declaration."""
         motor_file = tmp_path / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("motor : FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "motor : FB_Motor;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]
 
     def test_resolve_extends_keyword(self, tmp_path, mapping):
         """Test resolving type from EXTENDS clause."""
         base_file = tmp_path / "FB_Base.TcPOU"
         base_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("EXTENDS FB_Base", tmp_path, tmp_path / "FB_Child.TcPOU")
-        assert resolved == base_file
+        resolved = mapping.resolve_import_paths(
+            "EXTENDS FB_Base", tmp_path, tmp_path / "FB_Child.TcPOU"
+        )
+        assert resolved == [base_file]
 
     def test_resolve_implements_keyword(self, tmp_path, mapping):
         """Test resolving type from IMPLEMENTS clause."""
         interface_file = tmp_path / "I_Runnable.TcPOU"
         interface_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("IMPLEMENTS I_Runnable", tmp_path, tmp_path / "FB_Motor.TcPOU")
-        assert resolved == interface_file
+        resolved = mapping.resolve_import_paths(
+            "IMPLEMENTS I_Runnable", tmp_path, tmp_path / "FB_Motor.TcPOU"
+        )
+        assert resolved == [interface_file]
 
     def test_resolve_pointer_to_type(self, tmp_path, mapping):
         """Test resolving type from POINTER TO declaration."""
         motor_file = tmp_path / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("pMotor : POINTER TO FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "pMotor : POINTER TO FB_Motor;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]
 
     def test_resolve_reference_to_type(self, tmp_path, mapping):
         """Test resolving type from REFERENCE TO declaration."""
         motor_file = tmp_path / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("refMotor : REFERENCE TO FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "refMotor : REFERENCE TO FB_Motor;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]
 
     def test_resolve_array_of_type(self, tmp_path, mapping):
         """Test resolving type from ARRAY OF declaration."""
         motor_file = tmp_path / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("motors : ARRAY[0..9] OF FB_Motor;", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "motors : ARRAY[0..9] OF FB_Motor;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]
 
     def test_resolve_nested_pointer_array(self, tmp_path, mapping):
         """Test resolving type from nested POINTER TO ARRAY OF declaration."""
         motor_file = tmp_path / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path(
-            "pMotors : POINTER TO ARRAY[0..9] OF FB_Motor;", tmp_path, tmp_path / "Main.TcPOU"
+        resolved = mapping.resolve_import_paths(
+            "pMotors : POINTER TO ARRAY[0..9] OF FB_Motor;",
+            tmp_path,
+            tmp_path / "Main.TcPOU",
         )
-        assert resolved == motor_file
+        assert resolved == [motor_file]
 
     def test_case_insensitive_matching(self, tmp_path, mapping):
         """Test case-insensitive file matching."""
@@ -4402,23 +4532,31 @@ class TestTwinCATImportResolution:
         motor_file = tmp_path / "fb_motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("FB_MOTOR", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "FB_MOTOR", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]
 
-    def test_primitive_type_returns_none(self, tmp_path, mapping):
-        """Test that IEC 61131-3 primitive types return None."""
-        resolved = mapping.resolve_import_path("value : DINT;", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved is None
+    def test_primitive_type_returns_empty_list(self, tmp_path, mapping):
+        """Test that IEC 61131-3 primitive types return empty list."""
+        resolved = mapping.resolve_import_paths(
+            "value : DINT;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == []
 
-    def test_stdlib_type_returns_none(self, tmp_path, mapping):
-        """Test that standard library types (TON, etc.) return None."""
-        resolved = mapping.resolve_import_path("timer : TON;", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved is None
+    def test_stdlib_type_returns_empty_list(self, tmp_path, mapping):
+        """Test that standard library types (TON, etc.) return empty list."""
+        resolved = mapping.resolve_import_paths(
+            "timer : TON;", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == []
 
-    def test_not_found_returns_none(self, tmp_path, mapping):
-        """Test that non-existent symbols return None."""
-        resolved = mapping.resolve_import_path("FB_NonExistent", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved is None
+    def test_not_found_returns_empty_list(self, tmp_path, mapping):
+        """Test that non-existent symbols return empty list."""
+        resolved = mapping.resolve_import_paths(
+            "FB_NonExistent", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == []
 
     def test_searches_subdirectories(self, tmp_path, mapping):
         """Test that file search includes subdirectories."""
@@ -4427,5 +4565,7 @@ class TestTwinCATImportResolution:
         motor_file = lib_dir / "FB_Motor.TcPOU"
         motor_file.write_text("<xml/>")
 
-        resolved = mapping.resolve_import_path("FB_Motor", tmp_path, tmp_path / "Main.TcPOU")
-        assert resolved == motor_file
+        resolved = mapping.resolve_import_paths(
+            "FB_Motor", tmp_path, tmp_path / "Main.TcPOU"
+        )
+        assert resolved == [motor_file]

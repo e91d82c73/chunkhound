@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from .models import ConfidenceLevel, ConstantEntry, EntityLink, FactConflict, FactEntry
 from .prompts import (
     CONSTANTS_INSTRUCTION_FULL,
@@ -119,6 +121,12 @@ class EvidenceLedger:
                     type=const.get("type"),
                 )
                 ledger.add_constant(entry)
+        # Log size of constants extracted
+        constants_chars = sum(
+            len(e.name) + len(str(e.value or "")) + len(e.type or "")
+            for e in ledger.constants.values()
+        )
+        logger.info(f"[SIZE] Constants extracted ({ledger.constants_count}): {constants_chars:,} chars")
         return ledger
 
     # =========================================================================
@@ -409,7 +417,9 @@ class EvidenceLedger:
             remaining = len(self.constants) - count
             lines.append(f"\n... and {remaining} more constants")
 
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        logger.info(f"[SIZE] Constants prompt context: {len(result):,} chars")
+        return result
 
     def get_constants_prompt_instruction(
         self, max_entries: int = 50, use_short_form: bool = False
@@ -520,7 +530,9 @@ class EvidenceLedger:
         if not facts_context:
             return ""
 
-        return FACTS_MAP_INSTRUCTION.format(facts_context=facts_context)
+        result = FACTS_MAP_INSTRUCTION.format(facts_context=facts_context)
+        logger.info(f"[SIZE] Facts map prompt context ({len(related_facts)} facts): {len(result):,} chars")
+        return result
 
     def get_facts_reduce_prompt_context(self) -> str:
         """Generate context for reduce phase synthesis.
@@ -556,10 +568,12 @@ class EvidenceLedger:
                 conflict_lines.append(f"... and {remaining} more conflicts")
             conflicts_section = "\n".join(conflict_lines)
 
-        return FACTS_REDUCE_INSTRUCTION.format(
+        result = FACTS_REDUCE_INSTRUCTION.format(
             facts_context=facts_context,
             conflicts_section=conflicts_section,
         )
+        logger.info(f"[SIZE] Facts reduce prompt context ({len(self.facts)} facts): {len(result):,} chars")
+        return result
 
     # =========================================================================
     # Report Generation

@@ -20,6 +20,7 @@ from chunkhound.database_factory import DatabaseServices
 from chunkhound.services.research.shared.models import (
     ENABLE_SMART_BOUNDARIES,
     EXTRA_CONTEXT_TOKENS,
+    FILE_CONTENT_TOKENS_MAX,
     MAX_BOUNDARY_EXPANSION_LINES,
     TOKEN_BUDGET_PER_FILE,
 )
@@ -63,6 +64,11 @@ class FileReader:
 
         budget_limit = max_tokens  # None means unlimited
 
+        logger.debug(
+            f"[SIZE] read_files_with_budget: max_tokens={max_tokens}, "
+            f"chunks={len(chunks)}, files={len(files_to_chunks)}"
+        )
+
         # Read files with budget (track total tokens per algorithm spec)
         file_contents: dict[str, str] = {}
         total_tokens = 0
@@ -75,7 +81,8 @@ class FileReader:
             # Check if we've hit the overall token limit (skip if unlimited)
             if budget_limit is not None and total_tokens >= budget_limit:
                 logger.debug(
-                    f"Reached token limit ({budget_limit:,}), stopping file reading"
+                    f"[SIZE] Budget exhausted: total_tokens={total_tokens} >= "
+                    f"budget_limit={budget_limit}, stopping"
                 )
                 break
 
@@ -90,24 +97,56 @@ class FileReader:
                     logger.warning(f"File not found (expected at {path}): {file_path}")
                     continue
 
-                # Calculate token budget for this file
+                # Calculate token budget for this file (capped to prevent bloat)
                 num_chunks = len(file_chunks)
-                budget = TOKEN_BUDGET_PER_FILE * num_chunks
+                raw_budget = TOKEN_BUDGET_PER_FILE * num_chunks
+                budget = min(raw_budget, FILE_CONTENT_TOKENS_MAX)
+                logger.debug(
+                    f"[SIZE] Per-file budget: {file_path} chunks={num_chunks}, "
+                    f"budget={budget} (raw={raw_budget}, cap={FILE_CONTENT_TOKENS_MAX})"
+                )
 
                 # Read file
                 content = path.read_text(encoding="utf-8", errors="ignore")
 
                 # Estimate tokens
                 estimated_tokens = llm.estimate_tokens(content)
+                logger.debug(
+                    f"[SIZE] File tokens: {file_path} "
+                    f"estimated_tokens={estimated_tokens}"
+                )
+                logger.debug(
+                    f"[SIZE] File fits check: {file_path} "
+                    f"estimated={estimated_tokens} <= budget={budget} "
+                    f"-> {estimated_tokens <= budget}"
+                )
 
                 if estimated_tokens <= budget:
                     # File fits in budget, check against overall limit (skip if unlimited)
                     if budget_limit is None or total_tokens + estimated_tokens <= budget_limit:
+                        logger.debug(
+                            f"[SIZE] Including full file: {file_path} "
+                            f"total={total_tokens}+{estimated_tokens}="
+                            f"{total_tokens + estimated_tokens}, limit={budget_limit}"
+                        )
                         file_contents[file_path] = content
                         total_tokens += estimated_tokens
+                        logger.debug(
+                            f"[SIZE] Accumulated (full file): total now {total_tokens}"
+                        )
                     else:
+                        logger.debug(
+                            f"[SIZE] Full file exceeds budget: {file_path} "
+                            f"total={total_tokens}+{estimated_tokens}="
+                            f"{total_tokens + estimated_tokens} > limit={budget_limit}"
+                        )
                         # Truncate to fit within overall limit
                         remaining_tokens = budget_limit - total_tokens
+                        logger.debug(
+                            f"[SIZE] Truncation decision (full file): {file_path} "
+                            f"remaining={remaining_tokens}, threshold=500, "
+                            f"include={remaining_tokens > 500}"
+                        )
                         if remaining_tokens > 500:  # Only include if meaningful
                             chars_to_include = remaining_tokens * 4
                             file_contents[file_path] = content[:chars_to_include]
@@ -142,14 +181,36 @@ class FileReader:
 
                     combined_chunks = "\n\n...\n\n".join(chunk_contents)
                     chunk_tokens = llm.estimate_tokens(combined_chunks)
+                    logger.debug(
+                        f"[SIZE] Chunk tokens: {file_path} {len(chunk_contents)} chunks, "
+                        f"chunk_tokens={chunk_tokens}"
+                    )
 
                     # Check against overall token limit (skip if unlimited)
                     if budget_limit is None or total_tokens + chunk_tokens <= budget_limit:
+                        logger.debug(
+                            f"[SIZE] Including chunks: {file_path} "
+                            f"total={total_tokens}+{chunk_tokens}="
+                            f"{total_tokens + chunk_tokens}, limit={budget_limit}"
+                        )
                         file_contents[file_path] = combined_chunks
                         total_tokens += chunk_tokens
+                        logger.debug(
+                            f"[SIZE] Accumulated (chunks): total now {total_tokens}"
+                        )
                     else:
+                        logger.debug(
+                            f"[SIZE] Chunks exceed budget: {file_path} "
+                            f"total={total_tokens}+{chunk_tokens}="
+                            f"{total_tokens + chunk_tokens} > limit={budget_limit}"
+                        )
                         # Truncate to fit
                         remaining_tokens = budget_limit - total_tokens
+                        logger.debug(
+                            f"[SIZE] Truncation decision (chunks): {file_path} "
+                            f"remaining={remaining_tokens}, threshold=500, "
+                            f"include={remaining_tokens > 500}"
+                        )
                         if remaining_tokens > 500:
                             chars_to_include = remaining_tokens * 4
                             file_contents[file_path] = combined_chunks[
@@ -178,8 +239,8 @@ class FileReader:
 
         limit_desc = "unlimited" if budget_limit is None else f"{budget_limit:,}"
         logger.debug(
-            f"File reading complete: Loaded {len(file_contents)} files with {total_tokens:,} tokens "
-            f"(limit: {limit_desc})"
+            f"[SIZE] File reading complete: Loaded {len(file_contents)} files "
+            f"with {total_tokens:,} tokens (limit: {limit_desc})"
         )
         return file_contents
 
@@ -209,6 +270,10 @@ class FileReader:
         if not ENABLE_SMART_BOUNDARIES:
             # Fallback to legacy fixed-window behavior
             context_lines = EXTRA_CONTEXT_TOKENS // 20  # ~50 lines
+            logger.debug(
+                f"[SIZE] Smart boundaries disabled: using context_lines="
+                f"{context_lines} (EXTRA_CONTEXT_TOKENS={EXTRA_CONTEXT_TOKENS})"
+            )
             start_idx = max(1, start_line - context_lines)
             end_idx = min(len(lines), end_line + context_lines)
             return start_idx, end_idx
@@ -218,7 +283,11 @@ class FileReader:
         chunk_kind = metadata.get("kind") or chunk.get("symbol_type", "")
 
         # If this chunk is marked as a complete function/class/method, use its exact boundaries
-        if chunk_kind in ("function", "method", "class", "interface", "struct", "enum"):
+        if chunk_kind in (
+            "function", "method", "class", "interface", "struct", "enum",
+            # TwinCAT kinds (parser produces complete units)
+            "program", "function_block", "action", "property",
+        ):
             # Chunk is already a complete unit - just add small padding for context
             padding = 3  # A few lines for docstrings/decorators/comments
             start_idx = max(1, start_line - padding)
@@ -330,8 +399,8 @@ class FileReader:
         # Safety: Don't expand beyond max limit
         if expanded_end - expanded_start > MAX_BOUNDARY_EXPANSION_LINES:
             logger.debug(
-                f"Boundary expansion too large ({expanded_end - expanded_start} lines), "
-                f"limiting to {MAX_BOUNDARY_EXPANSION_LINES}"
+                f"[SIZE] Expansion limit: {expanded_end - expanded_start} lines > "
+                f"MAX_BOUNDARY_EXPANSION_LINES={MAX_BOUNDARY_EXPANSION_LINES}, capping"
             )
             expanded_end = expanded_start + MAX_BOUNDARY_EXPANSION_LINES
 

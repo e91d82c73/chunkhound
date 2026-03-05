@@ -192,7 +192,10 @@ class PluggableResearchService:
 
         initial_chunks = await self._unified_search(query, context, node_id=0, depth=0)
 
+        # Log size of initial chunks
+        initial_chunks_chars = sum(len(c.get("content", "")) for c in initial_chunks)
         logger.info(f"Initial search found {len(initial_chunks)} chunks")
+        logger.info(f"[SIZE] Initial chunks ({len(initial_chunks)}): {initial_chunks_chars:,} chars")
 
         # Build evidence ledger for constants context (used in exploration)
         initial_evidence = EvidenceLedger.from_chunks(initial_chunks)
@@ -230,11 +233,16 @@ class PluggableResearchService:
             constants_context=constants_context,
         )
 
+        # Log size of expanded chunks and files
+        expanded_chunks_chars = sum(len(c.get("content", "")) for c in expanded_chunks)
+        file_contents_chars = sum(len(v) for v in file_contents.values())
         logger.info(
             f"Exploration complete: {exploration_stats.get('chunks_total', len(expanded_chunks))} total chunks, "
             f"{exploration_stats.get('nodes_explored', 0)} nodes explored, "
             f"{exploration_stats.get('files_read', len(file_contents))} files read"
         )
+        logger.info(f"[SIZE] Expanded chunks ({len(expanded_chunks)}): {expanded_chunks_chars:,} chars")
+        logger.info(f"[SIZE] Files ({len(file_contents)}): {file_contents_chars:,} chars")
 
         # Aggregate chunks into synthesis format
         await self._emit_event(
@@ -242,6 +250,12 @@ class PluggableResearchService:
         )
 
         aggregated = self._aggregate_all_findings(expanded_chunks, file_contents)
+
+        # Log size of aggregated data
+        aggregated_chunks_chars = sum(len(c.get("content", "")) for c in aggregated.get("chunks", []))
+        aggregated_files_chars = sum(len(v) for v in aggregated.get("files", {}).values())
+        logger.info(f"[SIZE] Aggregated chunks ({len(aggregated.get('chunks', []))}): {aggregated_chunks_chars:,} chars")
+        logger.info(f"[SIZE] Aggregated files ({len(aggregated.get('files', {}))}): {aggregated_files_chars:,} chars")
 
         # Build evidence ledger from all aggregated chunks
         evidence_ledger = EvidenceLedger.from_chunks(aggregated.get("chunks", []))
@@ -315,6 +329,9 @@ class PluggableResearchService:
             llm_provider=self._llm_manager.get_utility_provider(),
             embedding_provider=self._embedding_manager.get_provider(),
         )
+        # Log size of facts context
+        facts_context_chars = len(extraction_result.evidence_ledger.get_facts_reduce_prompt_context())
+        logger.info(f"[SIZE] Facts context: {facts_context_chars:,} chars")
         cluster_groups = extraction_result.cluster_groups
         cluster_metadata = extraction_result.cluster_metadata
         evidence_ledger = evidence_ledger.merge(extraction_result.evidence_ledger)
@@ -660,7 +677,11 @@ class PluggableResearchService:
         chunk_kind = metadata.get("kind") or chunk.get("symbol_type", "")
 
         # If this chunk is marked as a complete function/class/method, use its exact boundaries
-        if chunk_kind in ("function", "method", "class", "interface", "struct", "enum"):
+        if chunk_kind in (
+            "function", "method", "class", "interface", "struct", "enum",
+            # TwinCAT kinds (parser produces complete units)
+            "program", "function_block", "action", "property",
+        ):
             # Chunk is already a complete unit - just add small padding for context
             padding = 3  # A few lines for docstrings/decorators/comments
             start_idx = max(1, start_line - padding)

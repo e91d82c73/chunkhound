@@ -168,13 +168,13 @@ class TwinCATMapping(BaseMapping):
                 return file_path
         return None
 
-    def resolve_import_path(
+    def resolve_import_paths(
         self,
         import_text: str,
         base_dir: Path,
         source_file: Path,
-    ) -> Path | None:
-        """Resolve TwinCAT import symbol to .TcPOU file path.
+    ) -> list[Path]:
+        """Resolve TwinCAT import symbol to .TcPOU file paths.
 
         Unlike Python/JS with `import "file.py"` syntax, TwinCAT uses
         symbol-based imports (e.g., `FB_Motor`). This method maps symbol
@@ -186,22 +186,22 @@ class TwinCATMapping(BaseMapping):
             source_file: Path to the source file containing the import
 
         Returns:
-            Path to the resolved .TcPOU file, or None if not found
+            List of paths to resolved .TcPOU files (empty if not found)
         """
         # Extract symbol name from various import formats
         symbol = self._extract_symbol_name(import_text)
         if not symbol:
-            return None
+            return []
 
         symbol_upper = symbol.upper()
 
         # Skip primitive types (BOOL, DINT, etc.)
         if symbol_upper in _PRIMITIVE_TYPES:
-            return None
+            return []
 
         # Skip standard library types (TON, CTU, etc.)
         if symbol_upper in _STDLIB_TYPES:
-            return None
+            return []
 
         # Search from source file's directory rather than base_dir.
         # While base_dir would provide complete coverage, searching the entire
@@ -210,8 +210,8 @@ class TwinCATMapping(BaseMapping):
         # since TwinCAT projects typically co-locate related POUs.
         result = self._find_symbol_file(symbol, source_file.parent)
         if result is not None:
-            return result.resolve()  # Ensure absolute path
-        return None
+            return [result.resolve()]  # Ensure absolute path
+        return []
 
     # Required abstract method implementations (not used for TwinCAT)
     # These are required by BaseMapping but TwinCAT uses Lark instead of tree-sitter

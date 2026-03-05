@@ -139,6 +139,14 @@ class ClaudeCodeCLIProvider(BaseCLIProvider):
                 if process.returncode != 0:
                     raw_err = (stderr or stdout or b"").decode("utf-8", errors="ignore")
                     error_msg = sanitize_error_text(raw_err.strip()) or f"Exit code {process.returncode}"
+
+                    # Add diagnostic info for prompt length errors
+                    if "prompt is too long" in error_msg.lower():
+                        error_msg = f"{error_msg} (prompt: {len(prompt):,} chars)"
+                        logger.debug(
+                            f"Prompt too long ({len(prompt):,} chars):\n{prompt}"
+                        )
+
                     last_error = RuntimeError(
                         f"CLI command failed (exit {process.returncode}): {error_msg}"
                     )
