@@ -13,6 +13,13 @@ def _parse_audience(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def nonempty_path_filter(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise argparse.ArgumentTypeError("path filter must not be empty")
+    return stripped
+
+
 def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     """Add arguments common to all commands.
 

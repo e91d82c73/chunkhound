@@ -62,6 +62,7 @@ def create_parser() -> argparse.ArgumentParser:
     from .parsers.code_mapper_parser import add_map_subparser
     from .parsers.daemon_parser import add_daemon_subparser
     from .parsers.mcp_parser import add_mcp_subparser
+    from .parsers.quickresearch_parser import add_quickresearch_subparser
     from .parsers.research_parser import add_research_subparser
     from .parsers.run_parser import add_run_subparser
     from .parsers.search_parser import add_search_subparser
@@ -74,6 +75,7 @@ def create_parser() -> argparse.ArgumentParser:
     add_mcp_subparser(subparsers)
     add_search_subparser(subparsers)
     add_research_subparser(subparsers)
+    add_quickresearch_subparser(subparsers)
     add_autodoc_subparser(subparsers)
     add_map_subparser(subparsers)
     # Diagnose command retired; functionality lives under: index --check-ignores
@@ -172,6 +174,10 @@ async def async_main() -> None:
             from .commands.research import research_command
 
             await research_command(args, config)
+        elif args.command == "quickresearch":
+            from .commands.quickresearch import quickresearch_command
+
+            await quickresearch_command(args, config)
         elif args.command == "map":
             # Dynamic import to avoid early chunkhound module loading
             from .commands.code_mapper import code_mapper_command
