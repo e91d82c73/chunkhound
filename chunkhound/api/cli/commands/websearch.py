@@ -1,18 +1,29 @@
 """Websearch command for ChunkHound CLI."""
 
+from __future__ import annotations
+
 import argparse
 import asyncio
 import html
 import html.parser
+import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser
 
 from chunkhound.core.config.config import Config
 
 from ..utils.rich_output import RichOutputFormatter
+
+_MAX_FETCH_CONCURRENCY = 5
 
 
 class _NextFormParser(html.parser.HTMLParser):
@@ -99,6 +110,92 @@ def _fetch(params: dict[str, str]) -> str:
         return resp.read().decode()
 
 
+def _url_to_filename(url: str, max_length: int = 100) -> str:
+    name = re.sub(r"^https?://", "", url)
+    name = re.sub(r"[^\w.-]", "_", name)
+    return name[:max_length]
+
+
+def _fetch_url(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode(errors="replace")
+
+
+async def _fetch_page(browser: Browser, url: str) -> str:
+    """Fetch rendered HTML of a single URL using an existing Playwright browser."""
+    page = await browser.new_page()
+    try:
+        await page.goto(url, timeout=30000)
+        return await page.content()
+    finally:
+        await page.close()
+
+
+async def _fetch_one(
+    url: str,
+    tmpdir: Path,
+    browser: Browser | None,
+    progress_callback: Callable[[str], None] | None,
+    warning_callback: Callable[[str], None] | None,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    async with semaphore:
+        if progress_callback:
+            progress_callback(f"Fetching {url}...")
+        try:
+            content = (
+                await _fetch_page(browser, url)
+                if browser is not None
+                else await asyncio.to_thread(_fetch_url, url)
+            )
+            (tmpdir / _url_to_filename(url)).write_text(content, encoding="utf-8")
+        except Exception as e:
+            if warning_callback:
+                warning_callback(f"Failed to fetch {url}: {type(e).__name__}: {e}")
+
+
+async def _fetch_and_save(
+    urls: list[str],
+    tmpdir: Path,
+    progress_callback: Callable[[str], None] | None = None,
+    warning_callback: Callable[[str], None] | None = None,
+) -> None:
+    """Fetch each URL concurrently (bounded) and save HTML to tmpdir."""
+    semaphore = asyncio.Semaphore(_MAX_FETCH_CONCURRENCY)
+
+    async def _run(browser: Browser | None) -> None:
+        tasks = [
+            _fetch_one(
+                url, tmpdir, browser, progress_callback, warning_callback, semaphore
+            )
+            for url in urls
+        ]
+        await asyncio.gather(*tasks)
+
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        await _run(None)
+        return
+
+    async with async_playwright() as pw:
+        exe = pw.chromium.executable_path
+        if not (exe and Path(exe).exists()):
+            if warning_callback:
+                warning_callback(
+                    "Chromium not installed — run: playwright install chromium."
+                    " Falling back to urllib."
+                )
+            await _run(None)
+            return
+        browser = await pw.chromium.launch()
+        try:
+            await _run(browser)
+        finally:
+            await browser.close()
+
+
 def _search(
     query: str,
     limit: int = 30,
@@ -145,3 +242,11 @@ async def websearch_command(args: argparse.Namespace, config: Config) -> None:
         return
     output = "\n".join(f"{title}\n  {url}\n  {desc}" for title, url, desc in results)
     formatter.text_block(output)
+    tmpdir = Path(tempfile.mkdtemp(prefix="chunkhound_websearch_"))
+    await _fetch_and_save(
+        [url for _, url, _ in results],
+        tmpdir,
+        formatter.progress_indicator,
+        formatter.warning,
+    )
+    formatter.text_block(str(tmpdir))
