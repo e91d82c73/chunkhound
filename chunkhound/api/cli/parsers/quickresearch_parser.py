@@ -42,3 +42,6 @@ def add_quickresearch_subparser(subparsers: Any) -> argparse.ArgumentParser:
     add_config_arguments(p, ["embedding", "llm", "research"])
 
     return cast(argparse.ArgumentParser, p)
+
+
+__all__: list[str] = ["add_quickresearch_subparser"]

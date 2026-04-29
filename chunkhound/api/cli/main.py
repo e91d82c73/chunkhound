@@ -66,6 +66,7 @@ def create_parser() -> argparse.ArgumentParser:
     from .parsers.research_parser import add_research_subparser
     from .parsers.run_parser import add_run_subparser
     from .parsers.search_parser import add_search_subparser
+    from .parsers.websearch_parser import add_websearch_subparser
 
     parser = create_main_parser()
     subparsers = setup_subparsers(parser)
@@ -74,6 +75,7 @@ def create_parser() -> argparse.ArgumentParser:
     add_run_subparser(subparsers)
     add_mcp_subparser(subparsers)
     add_search_subparser(subparsers)
+    add_websearch_subparser(subparsers)
     add_research_subparser(subparsers)
     add_quickresearch_subparser(subparsers)
     add_autodoc_subparser(subparsers)
@@ -178,6 +180,10 @@ async def async_main() -> None:
             from .commands.quickresearch import quickresearch_command
 
             await quickresearch_command(args, config)
+        elif args.command == "websearch":
+            from .commands.websearch import websearch_command
+
+            await websearch_command(args, config)
         elif args.command == "map":
             # Dynamic import to avoid early chunkhound module loading
             from .commands.code_mapper import code_mapper_command

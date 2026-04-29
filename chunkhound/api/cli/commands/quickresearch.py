@@ -50,8 +50,16 @@ async def quickresearch_command(args: argparse.Namespace, config: Config) -> Non
         formatter.error(f"Indexing failed: {e}")
         sys.exit(1)
 
-    formatter.info(f"Researching {args.path}" + (f" (filter: {args.path_filter})" if args.path_filter else ""))
+    formatter.info(
+        f"Researching {args.path}"
+        + (f" (filter: {args.path_filter})" if args.path_filter else "")
+    )
     await run_research(
-        services, embedding_manager, llm_manager,
-        args.query, args.path_filter, config, formatter
+        services,
+        embedding_manager,
+        llm_manager,
+        args.query,
+        args.path_filter,
+        config,
+        formatter,
     )
