@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from playwright.async_api import Browser
+    from playwright.async_api import BrowserContext, Request, Route
 
 from chunkhound.core.config.config import Config
 
@@ -116,18 +116,100 @@ def _url_to_filename(url: str, max_length: int = 100) -> str:
     return name[:max_length]
 
 
-def _fetch_url(url: str) -> str:
+def _html_to_markdown(html_text: str) -> str:
+    # Lazy import: defers loading markdownify + deps (beautifulsoup4, soupsieve, six)
+    from markdownify import markdownify
+
+    return markdownify(
+        html_text,
+        strip=[
+            "script", "style", "head",
+            "nav", "footer", "header", "aside",
+            "form", "button", "iframe", "noscript", "svg",
+        ],
+        heading_style="ATX",
+    )
+
+
+def _fetch_url(url: str) -> tuple[str, str | bytes]:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode(errors="replace")
+        ct = resp.headers.get_content_type() or ""
+        raw = resp.read()
+        if ct == "application/pdf":
+            return ".pdf", raw
+        if ct == "text/html" or not ct:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            return ".md", _html_to_markdown(raw.decode(charset, errors="replace"))
+        raise ValueError(f"Unsupported content-type: {ct!r}")
 
 
-async def _fetch_page(browser: Browser, url: str) -> str:
-    """Fetch rendered HTML of a single URL using an existing Playwright browser."""
-    page = await browser.new_page()
+async def _fetch_page(context: BrowserContext, url: str) -> tuple[str, str | bytes]:
+    """Fetch a single URL using an existing Playwright browser context."""
+    page = await context.new_page()
     try:
-        await page.goto(url, timeout=30000)
-        return await page.content()
+        pdf_body: bytes | None = None
+        fetch_error: Exception | None = None
+
+        async def handle(route: Route, request: Request) -> None:
+            nonlocal pdf_body, fetch_error
+            if request.resource_type != "document":
+                await route.continue_()
+                return
+            try:
+                resp = await route.fetch()
+            except Exception as e:
+                fetch_error = e
+                await route.abort()
+                return
+            ct = resp.headers.get("content-type", "").split(";")[0].strip()
+            if ct == "application/pdf":
+                pdf_body = await resp.body()
+                await resp.dispose()
+                # Fulfill with empty HTML so page.goto completes without error
+                await route.fulfill(body=b"", content_type="text/html")
+            else:
+                try:
+                    await route.fulfill(response=resp)
+                finally:
+                    await resp.dispose()
+
+        await page.route("**/*", handle)
+        try:
+            response = await page.goto(url, timeout=30000)
+        except Exception:
+            if fetch_error is not None:
+                raise fetch_error
+            raise
+        if fetch_error is not None:
+            raise fetch_error
+
+        if pdf_body is not None:
+            if pdf_body[:4] == b"%PDF":
+                return ".pdf", pdf_body
+            # Chromium's PDF viewer can consume the response before the route
+            # handler receives the full body — re-fetch directly to bypass it.
+            direct = await context.request.get(url)
+            try:
+                if not direct.ok:
+                    raise ValueError(
+                        f"PDF fallback fetch failed: HTTP {direct.status}"
+                    )
+                direct_ct = direct.headers.get("content-type", "").split(";")[0].strip()
+                if direct_ct != "application/pdf":
+                    raise ValueError(
+                        f"PDF magic bytes missing and direct fetch returned {direct_ct!r}"
+                    )
+                return ".pdf", await direct.body()
+            finally:
+                await direct.dispose()
+
+        if response is None:
+            raise ValueError("Navigation failed: no response")
+        ct = response.headers.get("content-type", "").split(";")[0].strip()
+        if ct and ct != "text/html":
+            raise ValueError(f"Unsupported content-type: {ct!r}")
+        return ".md", _html_to_markdown(await page.content())
     finally:
         await page.close()
 
@@ -135,7 +217,7 @@ async def _fetch_page(browser: Browser, url: str) -> str:
 async def _fetch_one(
     url: str,
     tmpdir: Path,
-    browser: Browser | None,
+    context: BrowserContext | None,
     progress_callback: Callable[[str], None] | None,
     warning_callback: Callable[[str], None] | None,
     semaphore: asyncio.Semaphore,
@@ -144,12 +226,15 @@ async def _fetch_one(
         if progress_callback:
             progress_callback(f"Fetching {url}...")
         try:
-            content = (
-                await _fetch_page(browser, url)
-                if browser is not None
-                else await asyncio.to_thread(_fetch_url, url)
-            )
-            (tmpdir / _url_to_filename(url)).write_text(content, encoding="utf-8")
+            if context is not None:
+                ext, content = await _fetch_page(context, url)
+            else:
+                ext, content = await asyncio.to_thread(_fetch_url, url)
+            path = tmpdir / (_url_to_filename(url) + ext)
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(content, encoding="utf-8")
         except Exception as e:
             if warning_callback:
                 warning_callback(f"Failed to fetch {url}: {type(e).__name__}: {e}")
@@ -161,13 +246,13 @@ async def _fetch_and_save(
     progress_callback: Callable[[str], None] | None = None,
     warning_callback: Callable[[str], None] | None = None,
 ) -> None:
-    """Fetch each URL concurrently (bounded) and save HTML to tmpdir."""
+    """Fetch each URL concurrently (bounded) and save content to tmpdir."""
     semaphore = asyncio.Semaphore(_MAX_FETCH_CONCURRENCY)
 
-    async def _run(browser: Browser | None) -> None:
+    async def _run(context: BrowserContext | None) -> None:
         tasks = [
             _fetch_one(
-                url, tmpdir, browser, progress_callback, warning_callback, semaphore
+                url, tmpdir, context, progress_callback, warning_callback, semaphore
             )
             for url in urls
         ]
@@ -191,7 +276,11 @@ async def _fetch_and_save(
             return
         browser = await pw.chromium.launch()
         try:
-            await _run(browser)
+            context = await browser.new_context()
+            try:
+                await _run(context)
+            finally:
+                await context.close()
         finally:
             await browser.close()
 
