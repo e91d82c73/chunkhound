@@ -3,7 +3,7 @@
 import argparse
 from typing import Any, cast
 
-from .common_arguments import add_common_arguments
+from .common_arguments import add_common_arguments, add_config_arguments
 
 
 def add_websearch_subparser(subparsers: Any) -> argparse.ArgumentParser:
@@ -24,6 +24,7 @@ def add_websearch_subparser(subparsers: Any) -> argparse.ArgumentParser:
     )
 
     add_common_arguments(p)
+    add_config_arguments(p, ["embedding", "llm", "research"])
 
     return cast(argparse.ArgumentParser, p)
 

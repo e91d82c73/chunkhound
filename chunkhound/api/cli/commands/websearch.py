@@ -7,6 +7,7 @@ import asyncio
 import html
 import html.parser
 import re
+import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -314,6 +315,35 @@ def _search(
     return results[:limit]
 
 
+def _build_quickresearch_argv(args: argparse.Namespace, tmpdir: Path, config: Config) -> list[str]:
+    """Build argv to invoke quickresearch as a subprocess, forwarding relevant args."""
+    from ..parsers.common_arguments import build_forwarded_argv
+    from ..parsers.quickresearch_parser import add_quickresearch_subparser
+
+    _tmp = argparse.ArgumentParser(add_help=False)
+    qr_parser = add_quickresearch_subparser(_tmp.add_subparsers())
+
+    cmd: list[str] = [
+        sys.executable,
+        "-m", "chunkhound.api.cli.main",
+        "quickresearch",
+        args.query,
+        str(tmpdir),
+    ]
+    cmd.extend(build_forwarded_argv(
+        qr_parser,
+        args,
+        skip_dests={"help"},
+    ))
+
+    # Fallback: forward the auto-discovered local config when --config was not
+    # passed explicitly (the subprocess would not auto-discover it on its own).
+    if args.config is None and config.local_config_file is not None:
+        cmd.extend(["--config", str(config.local_config_file.resolve())])
+
+    return cmd
+
+
 async def websearch_command(args: argparse.Namespace, config: Config) -> None:
     """Fetch DuckDuckGo results for the given query."""
     formatter = RichOutputFormatter(verbose=getattr(args, "verbose", False))
@@ -339,3 +369,16 @@ async def websearch_command(args: argparse.Namespace, config: Config) -> None:
         formatter.warning,
     )
     formatter.text_block(str(tmpdir))
+    # Invoke quickresearch as a subprocess rather than calling quickresearch_command()
+    # directly. chunkhound uses a process-global registry singleton
+    # (registry/__init__.py). configure_registry() mutates it and registers a database
+    # provider as a singleton — an in-process call would race on that shared state and
+    # could hand this command's DB connection to quickresearch instead of a fresh
+    # :memory: instance. A subprocess gets its own isolated registry and an independent
+    # duckdb.connect(":memory:") call.
+    cmd = _build_quickresearch_argv(args, tmpdir, config)
+    try:
+        await asyncio.to_thread(subprocess.run, cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        formatter.error(f"Research failed (exit {e.returncode})")
+        sys.exit(e.returncode)

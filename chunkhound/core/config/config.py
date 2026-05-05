@@ -39,6 +39,8 @@ class Config(BaseModel):
     target_dir: Path | None = Field(default=None, exclude=True)
     # Private field to track if embeddings were explicitly disabled
     embeddings_disabled: bool = Field(default=False, exclude=True)
+    # Private field to store the auto-discovered local .chunkhound.json path
+    local_config_file: Path | None = Field(default=None, exclude=True)
 
     def __init__(self, args: Any | None = None, **kwargs: Any) -> None:
         """Universal configuration initialization that handles all contexts.
@@ -130,6 +132,7 @@ class Config(BaseModel):
             if local_config_path.exists() and local_config_path != config_file:
                 import json
 
+                config_data["local_config_file"] = local_config_path
                 try:
                     with open(local_config_path) as f:
                         local_config = json.load(f)
