@@ -1,4 +1,4 @@
-"""Quickresearch command argument parser for ChunkHound CLI."""
+"""Argument parser for the hidden ``_quickresearch`` CLI subcommand."""
 
 import argparse
 from pathlib import Path
@@ -12,13 +12,13 @@ from .common_arguments import (
 
 
 def add_quickresearch_subparser(subparsers: Any) -> argparse.ArgumentParser:
-    """Add quickresearch command subparser to the main parser."""
+    """Register the internal ``_quickresearch`` subcommand (hidden from help)."""
     p = subparsers.add_parser(
-        "quickresearch",
-        help="Index a directory in memory, then perform deep code research",
+        "_quickresearch",
+        help=argparse.SUPPRESS,
         description=(
-            "Indexes files into a transient in-memory database and answers "
-            "research questions. No index is persisted."
+            "Internal: index a directory in memory, then perform deep code "
+            "research. No index is persisted."
         ),
     )
 

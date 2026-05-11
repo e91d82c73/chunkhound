@@ -316,7 +316,7 @@ def _search(
 
 
 def _build_quickresearch_argv(args: argparse.Namespace, tmpdir: Path, config: Config) -> list[str]:
-    """Build argv to invoke quickresearch as a subprocess, forwarding relevant args."""
+    """Build argv to invoke _quickresearch as a subprocess, forwarding relevant args."""
     from ..parsers.common_arguments import build_forwarded_argv
     from ..parsers.quickresearch_parser import add_quickresearch_subparser
 
@@ -326,7 +326,7 @@ def _build_quickresearch_argv(args: argparse.Namespace, tmpdir: Path, config: Co
     cmd: list[str] = [
         sys.executable,
         "-m", "chunkhound.api.cli.main",
-        "quickresearch",
+        "_quickresearch",
         args.query,
         str(tmpdir),
     ]
@@ -369,11 +369,11 @@ async def websearch_command(args: argparse.Namespace, config: Config) -> None:
         formatter.warning,
     )
     formatter.text_block(str(tmpdir))
-    # Invoke quickresearch as a subprocess rather than calling quickresearch_command()
+    # Invoke _quickresearch as a subprocess rather than calling quickresearch_command()
     # directly. chunkhound uses a process-global registry singleton
     # (registry/__init__.py). configure_registry() mutates it and registers a database
     # provider as a singleton — an in-process call would race on that shared state and
-    # could hand this command's DB connection to quickresearch instead of a fresh
+    # could hand this command's DB connection to _quickresearch instead of a fresh
     # :memory: instance. A subprocess gets its own isolated registry and an independent
     # duckdb.connect(":memory:") call.
     cmd = _build_quickresearch_argv(args, tmpdir, config)

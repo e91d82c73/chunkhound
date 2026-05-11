@@ -77,12 +77,12 @@ def create_parser() -> argparse.ArgumentParser:
     add_search_subparser(subparsers)
     add_websearch_subparser(subparsers)
     add_research_subparser(subparsers)
-    add_quickresearch_subparser(subparsers)
     add_autodoc_subparser(subparsers)
     add_map_subparser(subparsers)
     # Diagnose command retired; functionality lives under: index --check-ignores
     add_calibrate_subparser(subparsers)
-    # Internal daemon command (hidden from help)
+    # Internal commands (hidden from help)
+    add_quickresearch_subparser(subparsers)
     add_daemon_subparser(subparsers)
 
     return parser
@@ -176,7 +176,7 @@ async def async_main() -> None:
             from .commands.research import research_command
 
             await research_command(args, config)
-        elif args.command == "quickresearch":
+        elif args.command == "_quickresearch":
             from .commands.quickresearch import quickresearch_command
 
             await quickresearch_command(args, config)
