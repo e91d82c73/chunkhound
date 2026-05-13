@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import html
 import html.parser
+import os
 import re
 import subprocess
 import sys
@@ -119,17 +120,28 @@ def _url_to_filename(url: str, max_length: int = 100) -> str:
 
 def _html_to_markdown(html_text: str) -> str:
     # Lazy import: defers loading markdownify + deps (beautifulsoup4, soupsieve, six)
-    from markdownify import markdownify
+    from markdownify import MarkdownConverter
 
-    return markdownify(
-        html_text,
+    class _Converter(MarkdownConverter):
+        # strip=... only drops the wrapper tag, not its children, so raw
+        # JS/CSS/SVG source still leaks. Override to discard the body.
+        def convert_script(self, el, text, parent_tags):
+            return ""
+
+        def convert_style(self, el, text, parent_tags):
+            return ""
+
+        def convert_svg(self, el, text, parent_tags):
+            return ""
+
+    return _Converter(
         strip=[
-            "script", "style", "head",
+            "head",
             "nav", "footer", "header", "aside",
-            "form", "button", "iframe", "noscript", "svg",
+            "form", "button", "iframe", "noscript",
         ],
         heading_style="ATX",
-    )
+    ).convert(html_text)
 
 
 def _fetch_url(url: str) -> tuple[str, str | bytes]:
@@ -377,8 +389,16 @@ async def websearch_command(args: argparse.Namespace, config: Config) -> None:
     # :memory: instance. A subprocess gets its own isolated registry and an independent
     # duckdb.connect(":memory:") call.
     cmd = _build_quickresearch_argv(args, tmpdir, config)
+    # Defense in depth against any interactive prompt in the child.
+    env = {**os.environ, "CHUNKHOUND_NO_PROMPTS": "1"}
     try:
-        await asyncio.to_thread(subprocess.run, cmd, check=True)
+        await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            check=True,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
     except subprocess.CalledProcessError as e:
         formatter.error(f"Research failed (exit {e.returncode})")
         sys.exit(e.returncode)
