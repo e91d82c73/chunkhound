@@ -1,5 +1,6 @@
 """Modern Rich-based output formatting utilities for ChunkHound CLI commands."""
 
+import os
 import sys
 from typing import Any, Literal
 
@@ -45,7 +46,18 @@ class RichOutputFormatter:
         """
         self.verbose = verbose
         self._terminal_compatible = self._check_terminal_compatibility()
-        self.console = Console() if self._terminal_compatible else None
+        # Quiet mode redirects the shared Rich Console to stderr, so all
+        # console.print() call sites follow. The non-Rich fallback branches of
+        # section_header/text_block/json_output/box_section/startup_info/
+        # completion_summary/initial_stats_panel still use bare print() and
+        # leak to stdout when self.console is None.
+        self._quiet_stdout = bool(os.environ.get("CHUNKHOUND_QUICKRESEARCH_QUIET"))
+        if self._terminal_compatible:
+            self.console = (
+                Console(file=sys.stderr) if self._quiet_stdout else Console()
+            )
+        else:
+            self.console = None
         self._progress: Progress | None = None
         self._live: Live | None = None
 
@@ -97,10 +109,11 @@ class RichOutputFormatter:
 
         # Fallback to plain print
         # Note: message is already escaped when passed to _safe_print from other methods
+        stream = sys.stderr if self._quiet_stdout else sys.stdout
         if fallback_prefix:
-            print(f"{fallback_prefix} {message}")
+            print(f"{fallback_prefix} {message}", file=stream)
         else:
-            print(message)
+            print(message, file=stream)
 
     def info(self, message: str) -> None:
         """Print an info message."""

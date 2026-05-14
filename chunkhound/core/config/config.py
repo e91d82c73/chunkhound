@@ -41,6 +41,8 @@ class Config(BaseModel):
     embeddings_disabled: bool = Field(default=False, exclude=True)
     # Private field to store the auto-discovered local .chunkhound.json path
     local_config_file: Path | None = Field(default=None, exclude=True)
+    # Private field to store the explicit --config path (absolute) when provided
+    config_file: Path | None = Field(default=None, exclude=True)
 
     def __init__(self, args: Any | None = None, **kwargs: Any) -> None:
         """Universal configuration initialization that handles all contexts.
@@ -73,6 +75,7 @@ class Config(BaseModel):
             # Get config file from --config if present
             if hasattr(args, "config") and args.config:
                 config_file = Path(args.config)
+                config_data["config_file"] = config_file.resolve()
 
             # For most commands, args.path represents the project root used for config
             # discovery. For map, args.path is a documentation scope and must

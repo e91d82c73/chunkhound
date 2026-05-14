@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from playwright.async_api import BrowserContext, Request, Route
 
 from chunkhound.core.config.config import Config
+from chunkhound.utils.websearch_sources import format_sources
 
 from ..utils.rich_output import RichOutputFormatter
 
@@ -327,6 +328,33 @@ def _search(
     return results[:limit]
 
 
+def _build_quickresearch_argv_core(
+    query: str,
+    tmpdir: Path,
+    path_filter: str | None,
+    config: Config,
+) -> list[str]:
+    """Build argv to invoke _quickresearch as a subprocess.
+
+    Forwards the config source file as an absolute path so the child process
+    does not need to re-run config discovery (which would otherwise fall back
+    to env vars / defaults under the MCP server's working directory).
+    """
+    cmd: list[str] = [
+        sys.executable,
+        "-m", "chunkhound.api.cli.main",
+        "_quickresearch",
+        query,
+        str(tmpdir),
+    ]
+    if path_filter is not None:
+        cmd.extend(["--path-filter", path_filter])
+    source = config.config_file or config.local_config_file
+    if source is not None:
+        cmd.extend(["--config", str(Path(source).resolve())])
+    return cmd
+
+
 def _build_quickresearch_argv(args: argparse.Namespace, tmpdir: Path, config: Config) -> list[str]:
     """Build argv to invoke _quickresearch as a subprocess, forwarding relevant args."""
     from ..parsers.common_arguments import build_forwarded_argv
@@ -335,24 +363,14 @@ def _build_quickresearch_argv(args: argparse.Namespace, tmpdir: Path, config: Co
     _tmp = argparse.ArgumentParser(add_help=False)
     qr_parser = add_quickresearch_subparser(_tmp.add_subparsers())
 
-    cmd: list[str] = [
-        sys.executable,
-        "-m", "chunkhound.api.cli.main",
-        "_quickresearch",
-        args.query,
-        str(tmpdir),
-    ]
+    cmd = _build_quickresearch_argv_core(
+        args.query, tmpdir, getattr(args, "path_filter", None), config
+    )
     cmd.extend(build_forwarded_argv(
         qr_parser,
         args,
-        skip_dests={"help"},
+        skip_dests={"help", "path_filter", "config"},
     ))
-
-    # Fallback: forward the auto-discovered local config when --config was not
-    # passed explicitly (the subprocess would not auto-discover it on its own).
-    if args.config is None and config.local_config_file is not None:
-        cmd.extend(["--config", str(config.local_config_file.resolve())])
-
     return cmd
 
 
@@ -371,8 +389,7 @@ async def websearch_command(args: argparse.Namespace, config: Config) -> None:
             f"No results found for {args.query!r} — DDG HTML structure may have changed"
         )
         return
-    output = "\n".join(f"{title}\n  {url}\n  {desc}" for title, url, desc in results)
-    formatter.text_block(output)
+    formatter.text_block(format_sources(results))
     tmpdir = Path(tempfile.mkdtemp(prefix="chunkhound_websearch_"))
     await _fetch_and_save(
         [url for _, url, _ in results],

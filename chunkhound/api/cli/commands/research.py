@@ -1,6 +1,7 @@
 """Research command module - handles deep code research operations."""
 
 import argparse
+import os
 import sys
 
 from loguru import logger
@@ -71,7 +72,10 @@ async def run_research(
     formatter: RichOutputFormatter,
 ) -> None:
     """Run deep_research_impl with TreeProgressDisplay and print result."""
-    with TreeProgressDisplay() as tree_progress:
+    progress_output = (
+        sys.stderr if os.environ.get("CHUNKHOUND_QUICKRESEARCH_QUIET") else sys.stdout
+    )
+    with TreeProgressDisplay(output=progress_output) as tree_progress:
         try:
             result = await deep_research_impl(
                 services=services,
