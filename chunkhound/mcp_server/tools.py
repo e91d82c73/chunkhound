@@ -651,7 +651,8 @@ async def websearch_impl(
         path_filter: Optional scope restriction forwarded to the research stage.
 
     Returns:
-        Markdown: sources preamble + optional fetch-warning block + research answer.
+        Markdown: research answer (with tmpdir paths rewritten to source URLs)
+        + optional fetch-warning block.
     """
     from chunkhound.api.cli.commands.websearch import (
         _build_quickresearch_argv_core,
@@ -659,7 +660,7 @@ async def websearch_impl(
         _search,
     )
     from chunkhound.mcp_server.common import MCPError
-    from chunkhound.utils.websearch_sources import format_sources
+    from chunkhound.utils.websearch_postprocess import replace_paths_with_urls
 
     if config is None:
         config = Config.from_environment()
@@ -674,6 +675,7 @@ async def websearch_impl(
         raise MCPError(f"No results found for {query!r}")
 
     warnings: list[str] = []
+    mapping: dict[str, str] = {}
     tmpdir = Path(tempfile.mkdtemp(prefix="chunkhound_websearch_mcp_"))
     proc: asyncio.subprocess.Process | None = None
     try:
@@ -682,6 +684,7 @@ async def websearch_impl(
             tmpdir,
             progress_callback=None,
             warning_callback=warnings.append,
+            mapping=mapping,
         )
 
         cmd = _build_quickresearch_argv_core(query, tmpdir, path_filter, config)
@@ -719,12 +722,12 @@ async def websearch_impl(
             await proc.wait()
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    preamble = format_sources(results)
+    answer = replace_paths_with_urls(answer, mapping).rstrip()
     warn_block = (
         "\n\n> **Fetch warnings:**\n"
         + "\n".join(f"> - {w}" for w in warnings)
     ) if warnings else ""
-    return f"{preamble}{warn_block}\n\n---\n\n{answer}"
+    return f"{answer}{warn_block}"
 
 
 # =============================================================================

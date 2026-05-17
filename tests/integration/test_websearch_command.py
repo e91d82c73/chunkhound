@@ -44,7 +44,7 @@ def _make_args(**overrides) -> argparse.Namespace:
 
 
 async def _noop_fetch_and_save(
-    urls, tmpdir, progress_callback=None, warning_callback=None
+    urls, tmpdir, progress_callback=None, warning_callback=None, mapping=None
 ):
     return None
 
@@ -136,6 +136,7 @@ async def test_websearch_command_happy_path_runs_subprocess(
 
         class _R:
             returncode = 0
+            stdout = ""
 
         return _R()
 
@@ -179,14 +180,15 @@ async def test_websearch_command_fetch_and_save_receives_only_urls(
     received: dict[str, object] = {}
 
     async def capturing_fetch(
-        urls, tmpdir, progress_callback=None, warning_callback=None
+        urls, tmpdir, progress_callback=None, warning_callback=None, mapping=None
     ):
         received["urls"] = list(urls)
         received["tmpdir"] = tmpdir
 
     monkeypatch.setattr(ws_mod, "_fetch_and_save", capturing_fetch)
     monkeypatch.setattr(
-        ws_mod.subprocess, "run", lambda cmd, **kw: type("R", (), {"returncode": 0})()
+        ws_mod.subprocess, "run",
+        lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": ""})(),
     )
 
     await ws_mod.websearch_command(_make_args(), config=None)

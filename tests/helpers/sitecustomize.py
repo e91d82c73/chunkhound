@@ -132,12 +132,16 @@ def _patch_websearch_for_tests() -> None:
             ][:limit]
 
         async def _stub_fetch_and_save(
-            urls, tmpdir, progress_callback=None, warning_callback=None
+            urls, tmpdir, progress_callback=None, warning_callback=None,
+            mapping=None,
         ):
             # Write minimal .md files so _quickresearch (stubbed separately)
             # has input should it ever run.
-            for i, _url in enumerate(urls):
-                (tmpdir / f"stub_{i}.md").write_text("stub content", encoding="utf-8")
+            for i, url in enumerate(urls):
+                name = f"stub_{i}.md"
+                (tmpdir / name).write_text("stub content", encoding="utf-8")
+                if mapping is not None:
+                    mapping[name] = url
 
         def _stub_build_argv(query, tmpdir, path_filter, config):
             return [_sys.executable, "-c", "print('ANSWER')"]

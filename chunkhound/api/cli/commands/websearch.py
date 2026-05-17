@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import html
 import html.parser
 import os
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from playwright.async_api import BrowserContext, Request, Route
 
 from chunkhound.core.config.config import Config
-from chunkhound.utils.websearch_sources import format_sources
+from chunkhound.utils.websearch_postprocess import replace_paths_with_urls
 
 from ..utils.rich_output import RichOutputFormatter
 
@@ -114,9 +115,13 @@ def _fetch(params: dict[str, str]) -> str:
 
 
 def _url_to_filename(url: str, max_length: int = 100) -> str:
+    # Append a short stable hash of the full URL so distinct URLs cannot
+    # collide via the lossy [^\w.-]→_ substitution or via truncation when
+    # two URLs share a long common prefix.
     name = re.sub(r"^https?://", "", url)
     name = re.sub(r"[^\w.-]", "_", name)
-    return name[:max_length]
+    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
+    return f"{name[: max(0, max_length - 9)]}_{digest}"[:max_length]
 
 
 def _html_to_markdown(html_text: str) -> str:
@@ -235,6 +240,7 @@ async def _fetch_one(
     progress_callback: Callable[[str], None] | None,
     warning_callback: Callable[[str], None] | None,
     semaphore: asyncio.Semaphore,
+    mapping: dict[str, str] | None,
 ) -> None:
     async with semaphore:
         if progress_callback:
@@ -249,6 +255,8 @@ async def _fetch_one(
                 path.write_bytes(content)
             else:
                 path.write_text(content, encoding="utf-8")
+            if mapping is not None:
+                mapping[path.name] = url
         except Exception as e:
             if warning_callback:
                 warning_callback(f"Failed to fetch {url}: {type(e).__name__}: {e}")
@@ -259,6 +267,7 @@ async def _fetch_and_save(
     tmpdir: Path,
     progress_callback: Callable[[str], None] | None = None,
     warning_callback: Callable[[str], None] | None = None,
+    mapping: dict[str, str] | None = None,
 ) -> None:
     """Fetch each URL concurrently (bounded) and save content to tmpdir."""
     semaphore = asyncio.Semaphore(_MAX_FETCH_CONCURRENCY)
@@ -266,7 +275,8 @@ async def _fetch_and_save(
     async def _run(context: BrowserContext | None) -> None:
         tasks = [
             _fetch_one(
-                url, tmpdir, context, progress_callback, warning_callback, semaphore
+                url, tmpdir, context, progress_callback, warning_callback,
+                semaphore, mapping,
             )
             for url in urls
         ]
@@ -389,33 +399,53 @@ async def websearch_command(args: argparse.Namespace, config: Config) -> None:
             f"No results found for {args.query!r} — DDG HTML structure may have changed"
         )
         return
-    formatter.text_block(format_sources(results))
-    tmpdir = Path(tempfile.mkdtemp(prefix="chunkhound_websearch_"))
-    await _fetch_and_save(
-        [url for _, url, _ in results],
-        tmpdir,
-        formatter.progress_indicator,
-        formatter.warning,
+    formatter.progress_indicator(
+        f"Found {len(results)} results, fetching content..."
     )
-    formatter.text_block(str(tmpdir))
-    # Invoke _quickresearch as a subprocess rather than calling quickresearch_command()
-    # directly. chunkhound uses a process-global registry singleton
-    # (registry/__init__.py). configure_registry() mutates it and registers a database
-    # provider as a singleton — an in-process call would race on that shared state and
-    # could hand this command's DB connection to _quickresearch instead of a fresh
-    # :memory: instance. A subprocess gets its own isolated registry and an independent
-    # duckdb.connect(":memory:") call.
-    cmd = _build_quickresearch_argv(args, tmpdir, config)
-    # Defense in depth against any interactive prompt in the child.
-    env = {**os.environ, "CHUNKHOUND_NO_PROMPTS": "1"}
-    try:
-        await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            check=True,
-            stdin=subprocess.DEVNULL,
-            env=env,
+    # ignore_cleanup_errors: subprocess may briefly retain handles after exit
+    # on Windows/network FS; a cleanup OSError would shadow sys.exit(returncode).
+    # The OS reaps $TMPDIR anyway.
+    with tempfile.TemporaryDirectory(
+        prefix="chunkhound_websearch_", ignore_cleanup_errors=True
+    ) as td:
+        tmpdir = Path(td)
+        mapping: dict[str, str] = {}
+        await _fetch_and_save(
+            [url for _, url, _ in results],
+            tmpdir,
+            formatter.progress_indicator,
+            formatter.warning,
+            mapping=mapping,
         )
-    except subprocess.CalledProcessError as e:
-        formatter.error(f"Research failed (exit {e.returncode})")
-        sys.exit(e.returncode)
+        # Invoke _quickresearch as a subprocess rather than calling
+        # quickresearch_command() directly. chunkhound uses a process-global
+        # registry singleton (registry/__init__.py). configure_registry()
+        # mutates it and registers a database provider as a singleton — an
+        # in-process call would race on that shared state and could hand this
+        # command's DB connection to _quickresearch instead of a fresh
+        # :memory: instance. A subprocess gets its own isolated registry and
+        # an independent duckdb.connect(":memory:") call.
+        cmd = _build_quickresearch_argv(args, tmpdir, config)
+        # QUIET routes the child's progress display to stderr (inherited here, so
+        # the user still sees it live) and frees stdout to carry only the answer
+        # we need to capture and rewrite.
+        env = {
+            **os.environ,
+            "CHUNKHOUND_NO_PROMPTS": "1",
+            "CHUNKHOUND_QUICKRESEARCH_QUIET": "1",
+        }
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=None,
+                text=True,
+                env=env,
+            )
+        except subprocess.CalledProcessError as e:
+            formatter.error(f"Research failed (exit {e.returncode})")
+            sys.exit(e.returncode)
+    formatter.text_block(replace_paths_with_urls(result.stdout, mapping))

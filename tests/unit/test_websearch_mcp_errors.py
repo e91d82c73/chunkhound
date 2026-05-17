@@ -76,7 +76,7 @@ def _stub_search(results):
 
 
 async def _stub_fetch_and_save_noop(
-    urls, tmpdir, progress_callback=None, warning_callback=None
+    urls, tmpdir, progress_callback=None, warning_callback=None, mapping=None
 ):
     return None
 
@@ -157,7 +157,7 @@ async def test_partial_fetch_warnings_render_bullets(monkeypatch, patched):
     monkeypatch.setattr(ws_mod, "_search", _stub_search(_default_results()))
 
     async def fetch_with_warnings(
-        urls, tmpdir, progress_callback=None, warning_callback=None
+        urls, tmpdir, progress_callback=None, warning_callback=None, mapping=None
     ):
         assert warning_callback is not None
         warning_callback("Failed to fetch https://a.invalid/: TimeoutError: x")
@@ -180,10 +180,6 @@ async def test_partial_fetch_warnings_render_bullets(monkeypatch, patched):
     assert "> **Fetch warnings:**" in result
     assert result.count("\n> - ") == 2
     assert "ANSWER" in result
-    # Sources preamble rendered from all three results.
-    assert "Title A" in result
-    assert "Title B" in result
-    assert "Title C" in result
 
 
 @pytest.mark.asyncio
@@ -273,6 +269,40 @@ async def test_cancellation_kills_subprocess_and_cleans_tempdir(
     assert patched["tmpdirs"], "mkdtemp was not captured"
     for p in patched["tmpdirs"]:
         assert not Path(p).exists(), f"tempdir {p} should be removed"
+
+
+@pytest.mark.asyncio
+async def test_answer_rewrites_filenames_to_source_urls(monkeypatch, patched):
+    monkeypatch.setattr(ws_mod, "_search", _stub_search(_default_results()))
+
+    async def populate_mapping(
+        urls, tmpdir, progress_callback=None, warning_callback=None, mapping=None
+    ):
+        assert mapping is not None
+        mapping["a.invalid_.md"] = "https://a.invalid/"
+        mapping["b.invalid_.pdf"] = "https://b.invalid/"
+
+    monkeypatch.setattr(ws_mod, "_fetch_and_save", populate_mapping)
+
+    fake_proc = _FakeProc(
+        stdout=b"see a.invalid_.md and b.invalid_.pdf for details",
+        returncode=0,
+    )
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec", _make_fake_exec(fake_proc)
+    )
+
+    result = await tools_mod.websearch_impl(
+        embedding_manager=None,
+        llm_manager=None,
+        config=None,
+        query="rewrite",
+    )
+
+    assert "https://a.invalid/" in result
+    assert "https://b.invalid/" in result
+    assert "a.invalid_.md" not in result
+    assert "b.invalid_.pdf" not in result
 
 
 @pytest.mark.asyncio
