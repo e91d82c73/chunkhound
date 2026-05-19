@@ -23,18 +23,6 @@ from rich.table import Table
 from rich.text import Text
 
 
-# Constants for fallback message prefixes
-class MessagePrefixes:
-    """Constants for consistent message prefixes in fallback mode."""
-
-    INFO = "[INFO]"
-    SUCCESS = "[SUCCESS]"
-    WARN = "[WARN]"
-    ERROR = "[ERROR]"
-    DEBUG = "[DEBUG]"
-    PROGRESS = "[PROGRESS]"
-
-
 class RichOutputFormatter:
     """Modern terminal UI formatter using Rich library."""
 
@@ -87,8 +75,6 @@ class RichOutputFormatter:
             try:
                 test_console = Console()
                 # Simple test - try to create a text object
-                from rich.text import Text
-
                 Text("test")
                 return True
             except Exception:
@@ -97,7 +83,7 @@ class RichOutputFormatter:
         except Exception:
             return False
 
-    def _safe_print(self, message: str, fallback_prefix: str = "") -> None:
+    def _safe_print(self, message: str) -> None:
         """Safely print with Rich or fallback to plain text."""
         if self._terminal_compatible and self.console is not None:
             try:
@@ -107,29 +93,25 @@ class RichOutputFormatter:
                 # Rich failed, fall through to plain print
                 pass
 
-        # Fallback to plain print
-        # Note: message is already escaped when passed to _safe_print from other methods
+        # Fallback: strip Rich markup; if parsing fails, print as-is.
+        try:
+            plain = Text.from_markup(message).plain
+        except Exception:
+            plain = message
         stream = sys.stderr if self._quiet_stdout else sys.stdout
-        if fallback_prefix:
-            print(f"{fallback_prefix} {message}", file=stream)
-        else:
-            print(message, file=stream)
+        print(plain, file=stream)
 
     def info(self, message: str) -> None:
         """Print an info message."""
-        self._safe_print(f"[blue][INFO][/blue] {escape(message)}", MessagePrefixes.INFO)
+        self._safe_print(f"[blue][INFO][/blue] {escape(message)}")
 
     def success(self, message: str) -> None:
         """Print a success message."""
-        self._safe_print(
-            f"[green][SUCCESS][/green] {escape(message)}", MessagePrefixes.SUCCESS
-        )
+        self._safe_print(f"[green][SUCCESS][/green] {escape(message)}")
 
     def warning(self, message: str) -> None:
         """Print a warning message."""
-        self._safe_print(
-            f"[yellow][WARN][/yellow] {escape(message)}", MessagePrefixes.WARN
-        )
+        self._safe_print(f"[yellow][WARN][/yellow] {escape(message)}")
 
     def error(self, message: str) -> None:
         """Print an error message."""
@@ -137,22 +119,16 @@ class RichOutputFormatter:
 
         # Skip stderr output in MCP mode to avoid JSON-RPC interference
         if not os.environ.get("CHUNKHOUND_MCP_MODE"):
-            self._safe_print(
-                f"[red][ERROR][/red] {escape(message)}", MessagePrefixes.ERROR
-            )
+            self._safe_print(f"[red][ERROR][/red] {escape(message)}")
 
     def verbose_info(self, message: str) -> None:
         """Print a verbose info message if verbose mode is enabled."""
         if self.verbose:
-            self._safe_print(
-                f"[cyan][DEBUG][/cyan] {escape(message)}", MessagePrefixes.DEBUG
-            )
+            self._safe_print(f"[cyan][DEBUG][/cyan] {escape(message)}")
 
     def progress_indicator(self, message: str) -> None:
         """Print a progress indicator message."""
-        self._safe_print(
-            f"[cyan][PROGRESS][/cyan] {escape(message)}", MessagePrefixes.PROGRESS
-        )
+        self._safe_print(f"[cyan][PROGRESS][/cyan] {escape(message)}")
 
     def safe_progress_indicator(self, message: str) -> None:
         """
@@ -170,7 +146,7 @@ class RichOutputFormatter:
         except Exception:
             # Ultimate fallback - bypass all Rich formatting
             # Note: escape() not needed here since this is typically internal progress messages
-            print(f"{MessagePrefixes.PROGRESS} {message}")
+            print(f"[PROGRESS] {message}")
 
     def section_header(self, title: str) -> None:
         """Print a section header with consistent formatting."""
@@ -189,7 +165,7 @@ class RichOutputFormatter:
     def bullet_list(self, items: list[str], indent: int = 2) -> None:
         """Print a clean bullet list."""
         for item in items:
-            self._safe_print(f"{'  ' * indent}- {item}", f"{'  ' * indent}-")
+            self._safe_print(f"{'  ' * indent}- {item}")
 
     def json_output(self, data: dict[str, Any]) -> None:
         """Print data as formatted JSON."""
