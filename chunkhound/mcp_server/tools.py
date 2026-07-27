@@ -515,6 +515,8 @@ OUTPUT: {status, query_ready, scan_progress}"""
 
 WEBSEARCH_DESCRIPTION = """Search the web for `query`, fetch the top results, build a transient in-memory index over the fetched pages, and run deep research to produce a cited answer. Use when the question requires external documentation, library references, or up-to-date web content — not for searching the local codebase (use `code_research` for that). High-latency; one call replaces a manual "search → read → synthesize" loop. Returns a cited markdown answer."""
 
+FETCHURL_DESCRIPTION = """Fetch a single URL (HTML or PDF) and return a Markdown answer. When `query` is provided and the page is large, the tool reranks the page's sections against the query using a reranker and elbow cutoff, then passes only the most relevant sections to the LLM. Otherwise the page is truncated and summarized in one LLM call."""
+
 
 # =============================================================================
 # Tool Implementations
@@ -953,6 +955,46 @@ async def websearch_impl(
         )
     ) if warnings else ""
     return f"{answer}{warn_block}"
+
+
+@register_tool(
+    description=FETCHURL_DESCRIPTION,
+    requires_llm=True,
+    requires_reranker=True,
+    name="fetchurl",
+)
+async def fetchurl_impl(
+    embedding_manager: EmbeddingManager,
+    llm_manager: LLMManager,
+    config: Config | None,
+    url: str,
+    query: str = "",
+) -> str:
+    """Fetch a URL and return a focused Markdown answer.
+
+    Args:
+        embedding_manager: Injected; used to obtain the reranker-capable embedding provider.
+        llm_manager: Injected; used for the extraction call.
+        config: Injected; used for fetchurl thresholds and retry policy.
+        url: Absolute http:// or https:// URL. file://, ftp://, data:, and hosts
+            resolving to loopback / private / link-local addresses are rejected.
+        query: Optional question. When set, focuses extraction; enables rerank+elbow
+            path on pages exceeding fetchurl.rerank_threshold_tokens.
+    """
+    from chunkhound.utils.fetchurl import run_fetchurl
+
+    if config is None:
+        config = Config.from_environment()
+
+    return await run_fetchurl(
+        url,
+        query,
+        config,
+        embedding_manager.get_provider(),
+        llm_manager,
+        warning_callback=None,
+        verbose_log=None,
+    )
 
 
 # =============================================================================
