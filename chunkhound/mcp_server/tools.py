@@ -528,7 +528,7 @@ Use when the question requires external documentation, library references, or up
 For follow-up questions, pass the prior query as previous_query — the expander then targets new dimensions instead of re-exploring the same ground, and the synthesizer interprets the current question in the prior topic's context. \
 High-latency; one call replaces a manual "search → read → synthesize" loop. Returns a cited markdown answer."""
 
-FETCHURL_DESCRIPTION = """Fetch a single URL (HTML or PDF) and return a Markdown answer. When `query` is provided and the page is large, the tool reranks the page's sections against the query using a reranker and elbow cutoff, then passes only the most relevant sections to the LLM. Otherwise the page is truncated and summarized in one LLM call."""
+FETCHURL_DESCRIPTION = """Fetch a single URL (HTML or PDF) and return a Markdown answer. On large pages with a query, the tool reranks the page's sections against the query using a reranker and elbow cutoff, then passes only the most relevant sections to the LLM. On small pages or when no query is given, the page is truncated and summarized in one LLM call."""
 
 
 # =============================================================================
@@ -1011,18 +1011,31 @@ async def fetchurl_impl(
     """
     from chunkhound.utils.fetchurl import run_fetchurl
 
+    # Reranker availability is gated upstream: requires_reranker=True on the
+    # @register_tool decorator hides fetchurl from tools/list and makes the
+    # MCP dispatcher raise before we get here (see mcp_server/common.py and
+    # mcp_server/base.py).
     if config is None:
         config = Config.from_environment()
 
-    return await run_fetchurl(
+    warnings: list[str] = []
+    answer = await run_fetchurl(
         url,
         query,
         config,
         embedding_manager.get_provider(),
         llm_manager,
-        warning_callback=None,
+        warning_callback=warnings.append,
         verbose_log=None,
     )
+    # Warnings may be multi-line; prefix every line to keep the blockquote.
+    warn_block = (
+        "\n\n> **Fetch warnings:**\n"
+        + "\n".join(
+            "> - " + w.replace("\n", "\n> ") for w in warnings
+        )
+    ) if warnings else ""
+    return f"{answer}{warn_block}"
 
 
 # =============================================================================

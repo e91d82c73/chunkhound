@@ -5,8 +5,8 @@ single fetched web source. Used by the truncate (token-truncate) and
 chunk-rerank (chunk + rerank + elbow) dispatch paths.
 """
 
-# Terse system prompt per ChunkHound convention (see query_expansion.py:6-9,
-# followup_generation.py:6-8; question_synthesis.py:6-9 is a variant).
+# Terse system prompt per ChunkHound convention (see query_expansion.py,
+# followup_generation.py; question_synthesis.py is a variant).
 # Detailed rules, content framing, and output shape live in the user template.
 SYSTEM_MESSAGE = "Extract a faithful Markdown answer from a single web source."
 

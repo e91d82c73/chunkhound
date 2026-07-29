@@ -305,9 +305,9 @@ def extract(
     if kind == ".md":
         assert isinstance(payload, str)
         # parser_factory returns the LanguageParser protocol; MARKDOWN's
-        # concrete instance is a UniversalParser (parser_factory.py:539
-        # branch — MARKDOWN has ts_markdown at :234). Cast so mypy sees
-        # the concrete API (file_id kwarg, list[Chunk] return).
+        # concrete instance is a UniversalParser (parser_factory.py
+        # branch — MARKDOWN has ts_markdown). Cast so mypy sees the
+        # concrete API (file_id kwarg, list[Chunk] return).
         parser = cast(UniversalParser, create_parser_for_language(Language.MARKDOWN))
         chunks = _annotate_parent_headers(
             parser.parse_content(payload, Path("dummy.md"), FileId(0))
@@ -358,6 +358,11 @@ async def run_fetchurl(
 
     The reranker capability gate is enforced at the CLI and MCP entry
     points — ``run_fetchurl`` assumes a reranker-capable provider.
+
+    ``warning_callback`` is reserved for signals not already present in the
+    returned body (e.g. reranker degradation); do not re-emit URL/detail
+    strings that ``_wrap`` / ``_wrap_no_content`` already surface, or callers
+    will render them twice.
     """
     kind, payload, source_metadata = await _fetch_with_retry(
         url, config, warning_callback=warning_callback,
@@ -368,8 +373,6 @@ async def run_fetchurl(
 
     if _is_pdf_parse_error(fx):
         detail = fx.chunks[0].code
-        if warning_callback:
-            warning_callback(f"PDF parse failed for {url}: {detail}")
         return _wrap(
             url,
             f"Fetched PDF at {url}, but could not extract text content.\n"
@@ -390,8 +393,6 @@ async def run_fetchurl(
             if fx.kind == ".pdf"
             else "page rendered to empty content"
         )
-        if warning_callback:
-            warning_callback(f"No content extracted from {url}: {reason}")
         return _wrap_no_content(url, reason)
 
     total_tokens = estimate_tokens_llm(fx.text)
@@ -421,7 +422,7 @@ async def option_truncate(
 ) -> str:
     """One LLM call over the raw extracted text.
 
-    Char-ratio slice matches ``estimate_tokens_llm`` (``token_utils.py:85``):
+    Char-ratio slice matches ``estimate_tokens_llm`` in ``token_utils.py``:
     deterministic + cheap, no tokenizer round-trip.
     """
     truncated = text[: config.fetchurl.truncate_tokens * LLM_CHARS_PER_TOKEN]
@@ -504,7 +505,7 @@ async def option_chunk_rerank(
 
     documents = [_rerank_document(d) for d in chunk_dicts]
 
-    # Batched rerank. Template: bfs_exploration_strategy.py:789-895
+    # Batched rerank. Template: bfs_exploration_strategy.py
     # (per-batch slice indexing); flattened here via abs_idx.
     max_batch = embedding_provider.get_max_rerank_batch_size()
     total_rerank_results = 0

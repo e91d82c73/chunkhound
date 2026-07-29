@@ -84,10 +84,10 @@ async def test_run_fetchurl_skips_llm_when_pdf_parse_fails(tmp_path):
     assert detail in answer
     assert "could not extract" in answer.lower()
     provider.complete.assert_not_called()
-    warning_callback.assert_called_once()
-    warned = warning_callback.call_args.args[0]
-    assert url in warned
-    assert detail in warned
+    # The wrapped answer body already carries `url` + `detail`; a warning
+    # would duplicate the same string in the caller's UI (MCP footer, CLI
+    # `[WARN]` line). Callers rely on the body as the sole diagnostic.
+    warning_callback.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -127,6 +127,6 @@ async def test_run_fetchurl_skips_llm_when_pdf_has_no_content(tmp_path):
     assert "no usable content" in answer.lower()
     assert "PDF extracted zero chunks" in answer
     provider.complete.assert_not_called()
-    warning_callback.assert_called_once()
-    warned = warning_callback.call_args.args[0]
-    assert url in warned
+    # `_wrap_no_content` already puts `url` + reason in the body; skipping
+    # the warning avoids duplicating the same string for callers.
+    warning_callback.assert_not_called()

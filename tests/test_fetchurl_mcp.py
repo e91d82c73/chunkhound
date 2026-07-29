@@ -3,7 +3,7 @@
 Bullets 1-2 of spec §16.2 (tools/list filtering + schema shape) are covered
 in ``tests/test_mcp_tool_consistency.py`` — see
 ``test_fetchurl_hidden_without_capabilities`` and ``test_fetchurl_schema``.
-Bullet 4 (dispatcher reranker guard at ``common.py:225``) is derivable from
+Bullet 4 (dispatcher reranker guard in ``common.py``) is derivable from
 tested primitives: ``TOOL_REGISTRY["fetchurl"].requires_reranker`` is
 asserted in ``test_tool_capability_requirements``, and
 ``has_reranker_support`` is exercised in ``test_embeddings.py``. No
