@@ -62,8 +62,10 @@ async def fetchurl_command(args: argparse.Namespace, config: Config) -> None:
         # (content-type / empty-body).
         formatter.error(f"fetchurl failed: {e}")
         sys.exit(1)
-    # Unexpected errors (LLM/reranker provider failures, OSError, browser/CDP
-    # errors) intentionally propagate — surfacing the traceback is more useful
-    # than a generic "fetchurl failed" swallow.
+    # Browser transport death on retry-exhaustion is wrapped into FetchUrlError
+    # inside `_fetch_with_retry` (caught above). Other unexpected errors
+    # (LLM/reranker provider failures, OSError, non-transport CDP errors)
+    # intentionally propagate — surfacing the traceback is more useful than a
+    # generic "fetchurl failed" swallow.
 
     formatter.text_block(answer)

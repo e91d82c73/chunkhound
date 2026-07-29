@@ -43,6 +43,15 @@ from chunkhound.utils.websearch_core import (
     fetch_url_to_content,
 )
 
+# websockets is a transitive dep of zendriver; guard for envs where zendriver
+# is uninstalled (urllib-only path). `_is_browser_fatal` short-circuits to
+# False when the sentinel is None.
+_WSConnectionClosed: type[BaseException] | None
+try:
+    from websockets.exceptions import ConnectionClosed as _WSConnectionClosed
+except ImportError:
+    _WSConnectionClosed = None
+
 if TYPE_CHECKING:
     from chunkhound.interfaces.embedding_provider import EmbeddingProvider
     from chunkhound.llm_manager import LLMManager
@@ -191,6 +200,36 @@ def _classify_and_raise_if_terminal(e: BaseException) -> None:
     raise e
 
 
+def _is_browser_fatal(e: BaseException) -> bool:
+    """True iff ``e`` indicates the CDP WebSocket transport has died.
+
+    Signals that the current browser handle is unusable for the rest of the
+    retry loop — the caller should rebind ``browser`` to ``None`` so
+    subsequent attempts take the urllib branch in ``fetch_url_to_content``.
+
+    Deliberately narrow: ``asyncio.TimeoutError`` is NOT included. A timeout
+    on a live browser during a slow page load is legitimate and should
+    retry against the browser. Only positive signals of transport death
+    (websocket close) trigger the downgrade.
+
+    Also walks ``__cause__``/``__context__`` because zendriver has been
+    observed to wrap CDP transport errors in higher-level exceptions.
+    ``__context__`` risks false positives (auto-attached for any raise
+    inside an except), but CDP death is one-way — the WebSocket stays
+    closed — so downgrading to urllib remains the correct action.
+    """
+    if _WSConnectionClosed is None:
+        return False
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, _WSConnectionClosed):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 async def _fetch_with_retry(
     url: str,
     config: Config,
@@ -200,10 +239,19 @@ async def _fetch_with_retry(
 
     Returns the 3-tuple from `fetch_url_to_content` on the final successful
     attempt: ``(kind, payload, source_metadata)``.
+
+    Retry budget: ``config.fetchurl.max_retries`` bounds total attempts, not
+    attempts-per-transport. A browser-death attempt consumes one slot before
+    the loop downgrades to urllib, so ``max_retries=3`` with an attempt-0
+    browser death yields two remaining urllib attempts, not three.
     """
     await _validate_url_and_resolve(url)
 
-    async with _managed_browser(warning_callback) as browser:
+    async with _managed_browser(warning_callback) as managed_browser:
+        # Rebindable local: on a browser-fatal exception we set this to None
+        # so subsequent attempts take the urllib branch. The `async with`
+        # cleanup still stops the original browser via its own reference.
+        browser = managed_browser
         max_attempts = config.fetchurl.max_retries
         last_exc: BaseException | None = None
         for attempt in range(max_attempts):
@@ -213,10 +261,34 @@ async def _fetch_with_retry(
             try:
                 return await fetch_url_to_content(url, browser)
             except Exception as e:
+                if browser is not None and _is_browser_fatal(e):
+                    if warning_callback:
+                        has_remaining = attempt + 1 < max_attempts
+                        tail = (
+                            "falling back to urllib for remaining attempts."
+                            if has_remaining
+                            else "no retries remain."
+                        )
+                        warning_callback(
+                            f"Browser died mid-fetch ({type(e).__name__}: {e}); "
+                            f"{tail}"
+                        )
+                    browser = None
+                    last_exc = e
+                    continue
                 _classify_and_raise_if_terminal(e)  # Re-raises if non-retryable.
                 last_exc = e
         # Exhausted retries — surface the last transient exception.
         assert last_exc is not None
+        if _is_browser_fatal(last_exc):
+            # Browser died on the final attempt so no urllib fallback ran.
+            # Wrap into FetchUrlError so the CLI's exception whitelist matches
+            # and MCP callers see a semantic type instead of a raw
+            # websockets exception name.
+            raise FetchUrlError(
+                f"Browser transport died mid-fetch and retries exhausted "
+                f"({type(last_exc).__name__}: {last_exc})"
+            ) from last_exc
         raise last_exc
 
 

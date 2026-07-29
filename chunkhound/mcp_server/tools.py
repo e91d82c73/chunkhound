@@ -83,6 +83,19 @@ def _summarize_subprocess_stderr(stderr: bytes) -> str:
     return stderr_text[-200:]
 
 
+def _format_fetch_warnings(warnings: list[str]) -> str:
+    """Render fetch warnings as a trailing Markdown blockquote (empty if none).
+
+    Multi-line warnings are prefixed on every line so they stay in the block.
+    """
+    if not warnings:
+        return ""
+    return (
+        "\n\n> **Fetch warnings:**\n"
+        + "\n".join("> - " + w.replace("\n", "\n> ") for w in warnings)
+    )
+
+
 # =============================================================================
 # Schema Generation Infrastructure
 # =============================================================================
@@ -975,14 +988,7 @@ async def websearch_impl(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     answer = replace_paths_with_urls(answer, mapping).rstrip()
-    # Warnings may be multi-line; prefix every line to keep the blockquote.
-    warn_block = (
-        "\n\n> **Fetch warnings:**\n"
-        + "\n".join(
-            "> - " + w.replace("\n", "\n> ") for w in warnings
-        )
-    ) if warnings else ""
-    return f"{answer}{warn_block}"
+    return f"{answer}{_format_fetch_warnings(warnings)}"
 
 
 @register_tool(
@@ -1028,14 +1034,7 @@ async def fetchurl_impl(
         warning_callback=warnings.append,
         verbose_log=None,
     )
-    # Warnings may be multi-line; prefix every line to keep the blockquote.
-    warn_block = (
-        "\n\n> **Fetch warnings:**\n"
-        + "\n".join(
-            "> - " + w.replace("\n", "\n> ") for w in warnings
-        )
-    ) if warnings else ""
-    return f"{answer}{warn_block}"
+    return f"{answer}{_format_fetch_warnings(warnings)}"
 
 
 # =============================================================================

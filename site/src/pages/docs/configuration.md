@@ -705,7 +705,6 @@ If any of these are missing, the MCP `websearch` tool is not registered (capabil
 
 | Constant | Value | Description |
 |---|---|---|
-| `MAX_FETCH_CONCURRENCY` | `5` | Max concurrent page fetches (defined in `chunkhound.utils.websearch_core`) |
 | `WEBSEARCH_LIMIT_MAX` | `100` | Upper bound for the `--limit` / `limit` parameter |
 
 ### Browser Dependency
