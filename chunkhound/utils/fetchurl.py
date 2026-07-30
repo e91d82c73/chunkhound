@@ -87,6 +87,19 @@ def _wrap_no_content(url: str, reason: str) -> str:
 _FETCHURL_OUTPUT_TOKENS = 4096
 
 
+async def _complete_and_wrap(
+    llm_manager: LLMManager, user_prompt: str, url: str
+) -> str:
+    """Run one utility-LLM completion and wrap the result."""
+    provider = llm_manager.get_utility_provider()
+    response = await provider.complete(
+        prompt=user_prompt,
+        system=fetchurl_prompts.SYSTEM_MESSAGE,
+        max_completion_tokens=_FETCHURL_OUTPUT_TOKENS,
+    )
+    return _wrap(url, response.content)
+
+
 _H1_RE = re.compile(r"^#\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
 
@@ -508,13 +521,7 @@ async def option_truncate(
             url=url, title=title, content=truncated,
         )
 
-    provider = llm_manager.get_utility_provider()
-    response = await provider.complete(
-        prompt=user,
-        system=fetchurl_prompts.SYSTEM_MESSAGE,
-        max_completion_tokens=_FETCHURL_OUTPUT_TOKENS,
-    )
-    return _wrap(url, response.content)
+    return await _complete_and_wrap(llm_manager, user, url)
 
 
 _PDF_PAGE_RE = re.compile(r"^page_(\d+)_")
@@ -658,10 +665,4 @@ async def option_chunk_rerank(
     user = fetchurl_prompts.FOCUSED_USER_TEMPLATE.format(
         url=url, title=title, query=query, content=body,
     )
-    provider = llm_manager.get_utility_provider()
-    response = await provider.complete(
-        prompt=user,
-        system=fetchurl_prompts.SYSTEM_MESSAGE,
-        max_completion_tokens=_FETCHURL_OUTPUT_TOKENS,
-    )
-    return _wrap(url, response.content)
+    return await _complete_and_wrap(llm_manager, user, url)

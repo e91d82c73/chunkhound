@@ -43,7 +43,7 @@ class FetchUrlConfig(BaseSettings):
         default=15_000,
         ge=1,
         description=(
-            "Estimated token count at/above which chunk-rerank "
+            "Estimated token count above which chunk-rerank "
             "(chunk+rerank+elbow) is used instead of truncate (token-truncate). "
             "Tokens estimated via LLM_CHARS_PER_TOKEN (4 chars/token) — the "
             "same ratio truncate_tokens uses so both knobs sit on one scale. "
@@ -82,7 +82,7 @@ class FetchUrlConfig(BaseSettings):
             "--fetchurl-rerank-threshold-tokens",
             type=int,
             help=(
-                "Estimated token count at/above which chunk-rerank "
+                "Estimated token count above which chunk-rerank "
                 "(chunk+rerank+elbow) is used instead of truncate "
                 "(token-truncate) (default: 15000)"
             ),
