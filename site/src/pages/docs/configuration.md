@@ -709,7 +709,7 @@ If any of these are missing, the MCP `websearch` tool is not registered (capabil
 
 ### Browser Dependency
 
-The fetch path uses **zendriver** (v0.15.3, core dependency — no extra install needed) to drive the system-installed Google Chrome for rich page rendering. Chrome >=124 is required. If Chrome is not found or too old, fetches fall back to `urllib` (less capable — may miss JS-rendered content and cannot fetch PDFs).
+The fetch path uses **zendriver** (v0.15.3, core dependency — no extra install needed) to drive the system-installed Google Chrome for rich page rendering. Chrome >=124 is required. If Chrome is not found or too old, fetches fall back to `urllib` (less capable — may miss JS-rendered content and cannot fetch some PDFs).
 
 ### Research Config Linkage
 

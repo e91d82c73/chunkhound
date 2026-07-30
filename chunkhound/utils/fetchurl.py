@@ -7,6 +7,13 @@ extraction, header annotation, title resolution, and dispatch all live
 in this module. Neither entry point calls `_fetch_with_retry` /
 `extract` / `option_truncate` / `option_chunk_rerank` directly — they
 collapse to a single `run_fetchurl(...)` call.
+
+Placement invariant: (a) CLI must not import from `mcp_server/` and
+vice-versa — hence `utils/`, mirroring `websearch_core.py`; (b) this
+module imports upward from `parsers/` (PDFMapping, parser_factory,
+UniversalParser) and `services/research/` (elbow_filter) — accepted as
+a service-shaped exception in an otherwise leaf-layer directory. Do
+not grow the pattern further without discussion.
 """
 
 from __future__ import annotations
@@ -23,6 +30,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+
+from websockets.exceptions import ConnectionClosed as _WSConnectionClosed
 
 from chunkhound.core.config.config import Config
 from chunkhound.core.models.chunk import Chunk
@@ -42,15 +51,6 @@ from chunkhound.utils.websearch_core import (
     _managed_browser,
     fetch_url_to_content,
 )
-
-# websockets is a transitive dep of zendriver; guard for envs where zendriver
-# is uninstalled (urllib-only path). `_is_browser_fatal` short-circuits to
-# False when the sentinel is None.
-_WSConnectionClosed: type[BaseException] | None
-try:
-    from websockets.exceptions import ConnectionClosed as _WSConnectionClosed
-except ImportError:
-    _WSConnectionClosed = None
 
 if TYPE_CHECKING:
     from chunkhound.interfaces.embedding_provider import EmbeddingProvider
@@ -231,8 +231,6 @@ def _is_browser_fatal(e: BaseException) -> bool:
     inside an except), but CDP death is one-way — the WebSocket stays
     closed — so downgrading to urllib remains the correct action.
     """
-    if _WSConnectionClosed is None:
-        return False
     seen: set[int] = set()
     cur: BaseException | None = e
     while cur is not None and id(cur) not in seen:

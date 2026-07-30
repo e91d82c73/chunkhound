@@ -11,6 +11,7 @@ import inspect
 import os
 import re
 import shutil
+import ssl
 import tempfile
 import types
 import urllib.error
@@ -927,6 +928,8 @@ async def websearch_impl(
     queries = await expand_web_queries(query, llm_manager, previous_query=previous_query)
     try:
         results = await search_multi(queries, limit, None)
+    except urllib.error.HTTPError as e:
+        raise MCPError(f"Web search failed: HTTP {e.code} {e.reason}") from e
     except urllib.error.URLError as e:
         raise MCPError(f"Web search failed: {e.reason}") from e
     if not results:
@@ -1015,7 +1018,8 @@ async def fetchurl_impl(
         query: Optional question. When set, focuses extraction; enables rerank+elbow
             path on pages exceeding fetchurl.rerank_threshold_tokens.
     """
-    from chunkhound.utils.fetchurl import run_fetchurl
+    from chunkhound.mcp_server.common import MCPError
+    from chunkhound.utils.fetchurl import FetchUrlError, run_fetchurl
 
     # Reranker availability is gated upstream: requires_reranker=True on the
     # @register_tool decorator hides fetchurl from tools/list and makes the
@@ -1025,15 +1029,30 @@ async def fetchurl_impl(
         config = Config.from_environment()
 
     warnings: list[str] = []
-    answer = await run_fetchurl(
-        url,
-        query,
-        config,
-        embedding_manager.get_provider(),
-        llm_manager,
-        warning_callback=warnings.append,
-        verbose_log=None,
-    )
+    try:
+        answer = await run_fetchurl(
+            url,
+            query,
+            config,
+            embedding_manager.get_provider(),
+            llm_manager,
+            warning_callback=warnings.append,
+            verbose_log=None,
+        )
+    # asyncio.TimeoutError is a distinct class on Python 3.10 (aliased to
+    # builtin TimeoutError only from 3.11); keep both until requires-python
+    # >= 3.11.
+    except (TimeoutError, asyncio.TimeoutError) as e:
+        raise MCPError("fetchurl timed out") from e
+    except FetchUrlError as e:
+        raise MCPError(f"fetchurl failed: {e}") from e
+    except urllib.error.HTTPError as e:
+        raise MCPError(f"fetchurl failed: HTTP {e.code} {e.reason}") from e
+    except urllib.error.URLError as e:
+        raise MCPError(f"fetchurl failed: {e.reason}") from e
+    # ValueError = fetch_url_to_content content-type / empty-body reject.
+    except (ssl.SSLError, ValueError) as e:
+        raise MCPError(f"fetchurl failed: {e}") from e
     return f"{answer}{_format_fetch_warnings(warnings)}"
 
 
