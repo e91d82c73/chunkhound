@@ -2,7 +2,7 @@
 
 from typing import Any
 
-import httpx
+import httpx2
 
 from tests.rerank_server import MockRerankScenario, MockRerankServer
 
@@ -46,10 +46,10 @@ class RerankServerManager:
 
     async def is_running(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=1.0) as client:
+            async with httpx2.AsyncClient(timeout=1.0) as client:
                 response = await client.get(f"{self.base_url}/health")
             return response.status_code == 200
-        except (httpx.RequestError, httpx.TimeoutException):
+        except (httpx2.RequestError, httpx2.TimeoutException):
             return False
 
     async def __aenter__(self) -> "RerankServerManager":

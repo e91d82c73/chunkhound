@@ -294,7 +294,7 @@ async def test_openai_provider_applies_explicit_ssl_verify_false(
     """Explicit ssl_verify=false should create an insecure custom transport."""
 
     captured: dict[str, object] = {}
-    httpx_calls: dict[str, object] = {}
+    httpx2_calls: dict[str, object] = {}
 
     class _FakeAsyncOpenAI:
         def __init__(self, **kwargs):
@@ -308,7 +308,7 @@ async def test_openai_provider_applies_explicit_ssl_verify_false(
             return None
 
     def _fake_async_client(**kwargs):
-        httpx_calls.update(kwargs)
+        httpx2_calls.update(kwargs)
         return _FakeHTTPClient()
 
     monkeypatch.setattr(openai_provider_module, "OPENAI_AVAILABLE", True)
@@ -317,7 +317,9 @@ async def test_openai_provider_applies_explicit_ssl_verify_false(
         "openai",
         SimpleNamespace(AsyncOpenAI=_FakeAsyncOpenAI, AsyncAzureOpenAI=_FakeAsyncOpenAI),
     )
-    monkeypatch.setattr(openai_provider_module.httpx, "AsyncClient", _fake_async_client)
+    monkeypatch.setattr(
+        openai_provider_module.httpx2, "AsyncClient", _fake_async_client
+    )
 
     provider = OpenAIEmbeddingProvider(
         base_url="https://localhost:11434/v1",
@@ -329,7 +331,7 @@ async def test_openai_provider_applies_explicit_ssl_verify_false(
 
     assert captured["base_url"] == "https://localhost:11434/v1"
     assert "http_client" in captured
-    assert httpx_calls["verify"] is False
+    assert httpx2_calls["verify"] is False
 
 
 @pytest.mark.asyncio
@@ -402,7 +404,9 @@ async def test_openai_rerank_ssl_override_applies_without_embedding_base_url(
         "openai",
         SimpleNamespace(AsyncOpenAI=_FakeAsyncOpenAI, AsyncAzureOpenAI=_FakeAsyncOpenAI),
     )
-    monkeypatch.setattr(openai_provider_module.httpx, "AsyncClient", _fake_async_client)
+    monkeypatch.setattr(
+        openai_provider_module.httpx2, "AsyncClient", _fake_async_client
+    )
 
     provider = OpenAIEmbeddingProvider(
         api_key="sk-test",

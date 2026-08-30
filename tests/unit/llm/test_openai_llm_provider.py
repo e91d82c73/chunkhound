@@ -135,7 +135,7 @@ def test_custom_endpoint_ssl_verify_false_creates_insecure_http_client():
             "chunkhound.providers.llm.openai_compatible_provider.AsyncOpenAI"
         ) as mock_client,
         patch(
-            "chunkhound.providers.llm.openai_compatible_provider.httpx.AsyncClient"
+            "chunkhound.providers.llm.openai_compatible_provider.httpx2.AsyncClient"
         ) as mock_http_client,
     ):
         OpenAILLMProvider(

@@ -8,7 +8,7 @@ import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, TypedDict, cast
 
-import httpx
+import httpx2
 from loguru import logger
 from typing_extensions import NotRequired
 
@@ -240,7 +240,7 @@ class OpenAIEmbeddingProvider:
 
     Thread Safety:
         This provider is thread-safe and stateless. Multiple concurrent calls to
-        embed() and rerank() are safe. The underlying OpenAI client (httpx-based)
+        embed() and rerank() are safe. The underlying OpenAI client (httpx2-based)
         handles concurrent requests properly.
 
         Note: Provider instances should not share mutable state. Each instance
@@ -473,8 +473,8 @@ class OpenAIEmbeddingProvider:
         if self._base_url:
             client_kwargs["base_url"] = self._base_url
             if not self._ssl_verify:
-                client_kwargs["http_client"] = httpx.AsyncClient(
-                    timeout=httpx.Timeout(timeout=self._timeout),
+                client_kwargs["http_client"] = httpx2.AsyncClient(
+                    timeout=httpx2.Timeout(timeout=self._timeout),
                     verify=False,
                 )
                 logger.debug(
@@ -482,7 +482,7 @@ class OpenAIEmbeddingProvider:
                 )
 
         # IMPORTANT: Create the client in async context to avoid TaskGroup errors on Ubuntu
-        # This ensures the event loop is running when the client initializes its httpx instance
+        # This ensures the event loop is running when the client initializes its HTTP transport
         self._client = openai.AsyncOpenAI(**client_kwargs)
         self._client_initialized = True
 
@@ -1774,9 +1774,7 @@ class OpenAIEmbeddingProvider:
         payload = self._build_rerank_payload(query, documents, top_k, format_to_use)
 
         try:
-            # Make API request with timeout using httpx directly
-            # since OpenAI client doesn't support custom endpoints well
-
+            # OpenAI SDK doesn't expose custom rerank endpoints, so call HTTP directly.
             client_kwargs: dict[str, Any] = {"timeout": self._timeout}
             if not self._effective_rerank_ssl_verify(rerank_endpoint):
                 client_kwargs["verify"] = False
@@ -1784,7 +1782,7 @@ class OpenAIEmbeddingProvider:
                     f"SSL verification disabled for rerank endpoint: {rerank_endpoint}"
                 )
 
-            async with httpx.AsyncClient(**client_kwargs) as client:
+            async with httpx2.AsyncClient(**client_kwargs) as client:
                 headers = {"Content-Type": "application/json"}
 
                 # Add Authorization header if API key is set (required for TEI with --api-key)
@@ -1828,19 +1826,19 @@ class OpenAIEmbeddingProvider:
             )
             return rerank_results
 
-        except httpx.ConnectError as e:
+        except httpx2.ConnectError as e:
             # Connection failed - service not available
             self._usage_stats["errors"] += 1
             logger.error(
                 f"Failed to connect to rerank service at {rerank_endpoint}: {e}"
             )
             raise
-        except httpx.TimeoutException as e:
+        except httpx2.TimeoutException as e:
             # Request timed out
             self._usage_stats["errors"] += 1
             logger.error(f"Rerank request timed out after {self._timeout}s: {e}")
             raise
-        except httpx.HTTPStatusError as e:
+        except httpx2.HTTPStatusError as e:
             # HTTP error response from service
             self._usage_stats["errors"] += 1
             logger.error(

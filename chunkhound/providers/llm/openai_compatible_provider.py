@@ -12,7 +12,7 @@ import asyncio
 import json
 from typing import Any
 
-import httpx
+import httpx2
 from loguru import logger
 
 from chunkhound.core.config.llm_config import DEFAULT_LLM_TIMEOUT
@@ -136,8 +136,8 @@ class OpenAICompatibleProvider(LLMProvider):
         if effective_base_url:
             client_kwargs["base_url"] = effective_base_url
             if not ssl_verify:
-                client_kwargs["http_client"] = httpx.AsyncClient(
-                    timeout=httpx.Timeout(timeout=timeout),
+                client_kwargs["http_client"] = httpx2.AsyncClient(
+                    timeout=httpx2.Timeout(timeout=timeout),
                     verify=False,
                 )
         self._client = AsyncOpenAI(**client_kwargs)

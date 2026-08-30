@@ -40,7 +40,7 @@ classifiers = [
 ]
 dependencies = [
     "duckdb==1.4.4",
-    "openai>=1.0.0",
+    "openai>=3.0.0,<4.0.0",
     "jsonschema>=4.0.0",
     "packaging>=21.0",
     "aiohttp>=3.12.15",
@@ -98,7 +98,7 @@ dependencies = [
     # PyArrow 23.x is the last known stable range with LanceDB on Windows CI.
     "pyarrow>=23.0.0,<24.0.0",
     "voyageai>=0.2.0",
-    "httpx>=0.28.1",
+    "httpx2>=2.12.0",
     "pymupdf>=1.27.0",
     "rich>=13.0.0",
     "readchar>=4.2.1",
@@ -108,7 +108,7 @@ dependencies = [
     "pathspec>=0.12.1",
     "pygit2>=1.12.0",
     "google-genai>=1.51.0",
-    "anthropic>=0.96.0,<1.0.0",
+    "anthropic>=1.0.0,<2.0.0",
     "msgpack>=1.0",
     "zstandard>=0.23.0",
     "tomli>=2.0.0; python_version < '3.11'",

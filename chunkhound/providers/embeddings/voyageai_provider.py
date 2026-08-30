@@ -5,7 +5,7 @@ import os
 from collections.abc import AsyncIterator, Sequence
 from typing import Any, TypedDict, cast
 
-import httpx
+import httpx2
 from loguru import logger
 
 from chunkhound.core.config.embedding_config import validate_rerank_configuration
@@ -1053,7 +1053,7 @@ class VoyageAIEmbeddingProvider:
             f"(format={self._rerank_format})"
         )
 
-        async with httpx.AsyncClient(
+        async with httpx2.AsyncClient(
             timeout=self._timeout, verify=self._rerank_ssl_verify
         ) as client:
             headers = {"Content-Type": "application/json"}

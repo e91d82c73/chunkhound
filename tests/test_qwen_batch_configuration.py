@@ -401,7 +401,7 @@ class TestRerankErrorHandling:
         # Initialize the OpenAI client BEFORE patching to avoid breaking isinstance checks
         await provider._ensure_client()
 
-        # Mock httpx.AsyncClient's post method to return HTTP 200 with error JSON
+        # Mock httpx2.AsyncClient's post method to return HTTP 200 with error JSON
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
@@ -416,8 +416,8 @@ class TestRerankErrorHandling:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        # Patch httpx.AsyncClient in the provider module (after client is initialized)
-        with patch("chunkhound.providers.embeddings.openai_provider.httpx.AsyncClient", return_value=mock_client):
+        # Patch httpx2.AsyncClient in the provider module (after client is initialized)
+        with patch("chunkhound.providers.embeddings.openai_provider.httpx2.AsyncClient", return_value=mock_client):
             with pytest.raises(ValueError) as exc_info:
                 await provider.rerank("test query", ["doc1", "doc2"])
 
@@ -428,7 +428,7 @@ class TestRerankErrorHandling:
     async def test_error_json_response_http_413(self):
         """Test that HTTP 413 errors are properly raised."""
         from unittest.mock import AsyncMock, MagicMock, patch
-        import httpx
+        import httpx2
 
         provider = OpenAIEmbeddingProvider(
             api_key="test-key",
@@ -446,7 +446,7 @@ class TestRerankErrorHandling:
         mock_response.text = '{"error":"batch size 64 > maximum allowed batch size 32"}'
 
         def raise_status_error():
-            raise httpx.HTTPStatusError(
+            raise httpx2.HTTPStatusError(
                 "Client error '413 Payload Too Large'",
                 request=MagicMock(),
                 response=mock_response,
@@ -460,9 +460,9 @@ class TestRerankErrorHandling:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        # Patch httpx.AsyncClient in the provider module (after client is initialized)
-        with patch("chunkhound.providers.embeddings.openai_provider.httpx.AsyncClient", return_value=mock_client):
-            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        # Patch httpx2.AsyncClient in the provider module (after client is initialized)
+        with patch("chunkhound.providers.embeddings.openai_provider.httpx2.AsyncClient", return_value=mock_client):
+            with pytest.raises(httpx2.HTTPStatusError) as exc_info:
                 await provider.rerank("test query", ["doc1", "doc2"])
 
             # Verify it's a 413 error

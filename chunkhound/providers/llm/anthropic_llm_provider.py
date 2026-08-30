@@ -20,7 +20,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-import httpx
+import httpx2
 from loguru import logger
 
 from chunkhound.core.config.claude_model_resolution import (
@@ -343,8 +343,8 @@ class AnthropicLLMProvider(LLMProvider):
         if base_url:
             client_kwargs["base_url"] = base_url
             if not ssl_verify:
-                client_kwargs["http_client"] = httpx.AsyncClient(
-                    timeout=httpx.Timeout(timeout=timeout),
+                client_kwargs["http_client"] = httpx2.AsyncClient(
+                    timeout=httpx2.Timeout(timeout=timeout),
                     verify=False,
                 )
 

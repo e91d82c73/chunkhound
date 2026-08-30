@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 # Import Windows-safe subprocess utilities
@@ -62,7 +62,7 @@ async def _wait_for_http_ready(
     """
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
-    async with httpx.AsyncClient() as probe:
+    async with httpx2.AsyncClient() as probe:
         while time.monotonic() < deadline:
             if proc is not None and proc.returncode is not None:
                 raise AssertionError(
@@ -73,7 +73,7 @@ async def _wait_for_http_ready(
                 resp = await probe.get(f"{base_url}/health", timeout=2.0)
                 if resp.status_code == 200:
                     return
-            except httpx.TransportError as exc:
+            except httpx2.TransportError as exc:
                 last_error = exc
             await asyncio.sleep(0.3)
     raise AssertionError(
@@ -644,7 +644,7 @@ sys.exit(asyncio.run(test()))
                 ready_timeout = max(30.0, get_fs_event_timeout())
                 await _wait_for_http_ready(base_url, ready_timeout, proc=proc)
 
-                async with httpx.AsyncClient() as raw_client:
+                async with httpx2.AsyncClient() as raw_client:
                     resp = await raw_client.get(f"{base_url}/health", timeout=5.0)
                 assert resp.status_code == 200
                 payload = resp.json()
@@ -696,7 +696,7 @@ sys.exit(asyncio.run(test()))
                 ready_timeout = max(30.0, get_fs_event_timeout())
                 await _wait_for_http_ready(base_url, ready_timeout, proc=proc)
 
-                async with httpx.AsyncClient() as raw_client:
+                async with httpx2.AsyncClient() as raw_client:
                     # No auth header -> 401
                     resp = await raw_client.post(
                         f"{base_url}/mcp",
@@ -813,7 +813,7 @@ sys.exit(asyncio.run(test()))
                 ready_timeout = max(30.0, get_fs_event_timeout())
                 await _wait_for_http_ready(base_url, ready_timeout, proc=proc)
 
-                async with httpx.AsyncClient() as raw_client:
+                async with httpx2.AsyncClient() as raw_client:
                     resp = await raw_client.get(
                         f"{base_url}/health",
                         headers={"Origin": "https://example.com"},

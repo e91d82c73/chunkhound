@@ -1520,6 +1520,8 @@ async def test_synthesis_truncation_propagates_through_common_and_daemon(
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
+    # Intentionally httpx (not httpx2): the mcp SDK's streamablehttp_client
+    # accepts an httpx-based client_factory and shares transports with it.
     import httpx
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client

@@ -488,7 +488,7 @@ class TestParseRerankResponse:
 
 
 # ===========================================================================
-# 6. _rerank_http_batch — mocked httpx
+# 6. _rerank_http_batch — mocked httpx2
 # ===========================================================================
 
 
@@ -517,7 +517,7 @@ class TestRerankHttpBatch:
         )
 
         with patch(
-            "chunkhound.providers.embeddings.voyageai_provider.httpx.AsyncClient",
+            "chunkhound.providers.embeddings.voyageai_provider.httpx2.AsyncClient",
             return_value=mock_client,
         ):
             results = await provider_with_rerank_url._rerank_http_batch(
@@ -533,7 +533,7 @@ class TestRerankHttpBatch:
         mock_client = _mock_http_client({"error": "model not found"})
 
         with patch(
-            "chunkhound.providers.embeddings.voyageai_provider.httpx.AsyncClient",
+            "chunkhound.providers.embeddings.voyageai_provider.httpx2.AsyncClient",
             return_value=mock_client,
         ):
             with pytest.raises(ValueError, match="Rerank service error"):
@@ -548,7 +548,7 @@ class TestRerankHttpBatch:
         mock_client = _mock_http_client({"results": [{"index": 0, "score": 0.5}]})
 
         with patch(
-            "chunkhound.providers.embeddings.voyageai_provider.httpx.AsyncClient",
+            "chunkhound.providers.embeddings.voyageai_provider.httpx2.AsyncClient",
             return_value=mock_client,
         ):
             await provider_with_rerank_url._rerank_http_batch("q", ["doc"], top_k=None)
@@ -569,7 +569,7 @@ class TestRerankHttpBatch:
         mock_client = _mock_http_client({"results": [{"index": 0, "score": 0.5}]})
 
         with patch(
-            "chunkhound.providers.embeddings.voyageai_provider.httpx.AsyncClient",
+            "chunkhound.providers.embeddings.voyageai_provider.httpx2.AsyncClient",
             return_value=mock_client,
         ):
             await p._rerank_http_batch("q", ["doc"], top_k=None)

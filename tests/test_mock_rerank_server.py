@@ -1,6 +1,6 @@
 """Deterministic contract tests for the mock rerank server."""
 
-import httpx
+import httpx2
 import pytest
 
 from tests.fixtures.rerank_server_manager import RerankServerManager
@@ -19,7 +19,7 @@ async def test_mock_rerank_server_health_reports_identity() -> None:
     )
 
     async with RerankServerManager(scenarios=[scenario]) as manager:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             response = await client.get(f"{manager.base_url}/health")
 
         assert response.status_code == 200
@@ -53,7 +53,7 @@ async def test_mock_rerank_server_matches_exact_cohere_request_and_records_it() 
     )
 
     async with RerankServerManager(scenarios=[scenario]) as manager:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             response = await client.post(
                 f"{manager.base_url}/rerank",
                 json={
@@ -103,7 +103,7 @@ async def test_mock_rerank_server_supports_tei_and_bare_array_formats() -> None:
     ]
 
     async with RerankServerManager(scenarios=scenarios) as manager:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             wrapped = await client.post(
                 f"{manager.base_url}/rerank",
                 json={"query": "wrapped", "texts": ["a", "b"]},
@@ -141,7 +141,7 @@ async def test_mock_rerank_server_rejects_unmatched_requests() -> None:
     )
 
     async with RerankServerManager(scenarios=[scenario]) as manager:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             response = await client.post(
                 f"{manager.base_url}/rerank",
                 json={
@@ -167,7 +167,7 @@ async def test_mock_rerank_server_rejects_mixed_payload_shapes() -> None:
     )
 
     async with RerankServerManager(scenarios=[scenario]) as manager:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx2.AsyncClient(timeout=2.0) as client:
             response = await client.post(
                 f"{manager.base_url}/rerank",
                 json={

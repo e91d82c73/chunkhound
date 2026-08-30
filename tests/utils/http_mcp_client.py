@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
+import httpx2
 
 from .jsonrpc_envelope import (
     JsonRpcTimeoutError,
@@ -45,7 +45,7 @@ class HttpMcpClient:
         headers = {}
         if auth_token:
             headers["Authorization"] = f"Bearer {auth_token}"
-        self._client = httpx.AsyncClient(headers=headers)
+        self._client = httpx2.AsyncClient(headers=headers)
         self._session_id: str | None = None
         self._next_request_id = 1
         self._closed = False
@@ -90,11 +90,11 @@ class HttpMcpClient:
         """Send a JSON-RPC notification (no response expected)."""
         await self._post(build_notification(method, params), timeout=5.0)
 
-    async def get(self, path: str, timeout: float = 5.0) -> httpx.Response:
+    async def get(self, path: str, timeout: float = 5.0) -> httpx2.Response:
         """GET an arbitrary path on the server (e.g. ``/health``)."""
         return await self._client.get(f"{self._base_url}{path}", timeout=timeout)
 
-    async def terminate_session(self, timeout: float = 5.0) -> httpx.Response:
+    async def terminate_session(self, timeout: float = 5.0) -> httpx2.Response:
         """Explicitly tear down the current session via ``DELETE /mcp``.
 
         Requires a prior ``initialize()`` call to have captured a session ID.
@@ -110,7 +110,7 @@ class HttpMcpClient:
             timeout=timeout,
         )
 
-    async def _post(self, payload: dict[str, Any], timeout: float) -> httpx.Response:
+    async def _post(self, payload: dict[str, Any], timeout: float) -> httpx2.Response:
         headers = {"Accept": _ACCEPT_HEADER, "Content-Type": "application/json"}
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
@@ -118,7 +118,7 @@ class HttpMcpClient:
             response = await self._client.post(
                 self._mcp_url, json=payload, headers=headers, timeout=timeout
             )
-        except httpx.TimeoutException as exc:
+        except httpx2.TimeoutException as exc:
             raise JsonRpcTimeoutError(
                 f"Request {payload.get('method')} timed out after {timeout}s"
             ) from exc
