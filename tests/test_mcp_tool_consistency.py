@@ -1522,6 +1522,10 @@ async def test_synthesis_truncation_propagates_through_common_and_daemon(
 
     # Intentionally httpx (not httpx2): the mcp SDK's streamablehttp_client
     # accepts an httpx-based client_factory and shares transports with it.
+    # NOTE: this deprecated alias is kept intentionally; the v1.29 replacement
+    # `streamable_http_client` dropped the `httpx_client_factory` kwarg this
+    # test relies on. It is removed in v2, so this test needs a rewrite as
+    # part of the v2 migration — out of scope for the v1.29.1 pin bump.
     import httpx
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
